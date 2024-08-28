@@ -1,7 +1,6 @@
 name: cicd
 
 on:
-  workflow-dispatch:
   push:
     branches: [ dev ]
 
