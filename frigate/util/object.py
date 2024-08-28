@@ -40,19 +40,29 @@ def get_camera_regions_grid(
     min_region_size: int,
 ) -> list[list[dict[str, any]]]:
     """Build a grid of expected region sizes for a camera."""
+
+    grid = []
+    for x in range(GRID_SIZE):
+        row = []
+        for y in range(GRID_SIZE):
+            row.append({"sizes": []})
+        grid.append(row)
+    last_update = 0
+    return grid
+
     # get grid from db if available
-    try:
-        regions: Regions = Regions.select().where(Regions.camera == name).get()
-        grid = regions.grid
-        last_update = regions.last_update
-    except DoesNotExist:
-        grid = []
-        for x in range(GRID_SIZE):
-            row = []
-            for y in range(GRID_SIZE):
-                row.append({"sizes": []})
-            grid.append(row)
-        last_update = 0
+    # try:
+    #     regions: Regions = Regions.select().where(Regions.camera == name).get()
+    #     grid = regions.grid
+    #     last_update = regions.last_update
+    # except DoesNotExist:
+    #     grid = []
+    #     for x in range(GRID_SIZE):
+    #         row = []
+    #         for y in range(GRID_SIZE):
+    #             row.append({"sizes": []})
+    #         grid.append(row)
+    #     last_update = 0
 
     # get events for timeline entries
     events = (
