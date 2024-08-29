@@ -3,7 +3,7 @@ name: cicd
 on:
   workflow_dispatch:
   push:
-    branches: [ dev ]
+    branches: [ testing ]
 
 jobs:
   build:
@@ -31,6 +31,6 @@ jobs:
           file: docker/main/Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/ivanjx/frigate:latest
-          cache-from: type=registry,ref=ghcr.io/ivanjx/frigate:latest
+          tags: ghcr.io/ivanjx/frigate:testing
+          cache-from: type=registry,ref=ghcr.io/ivanjx/frigate:testing
           cache-to: type=inline

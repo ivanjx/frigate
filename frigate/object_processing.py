@@ -143,8 +143,8 @@ class TrackedObject:
         return self.computed_score < threshold
 
     def compute_score(self):
-        """get median of scores for object."""
-        return median(self.score_history)
+        """get max of scores for object."""
+        return max(self.score_history)
 
     def update(self, current_frame_time, obj_data):
         thumb_update = False
