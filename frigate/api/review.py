@@ -434,8 +434,8 @@ def delete_reviews():
         events = (
             Event.select(Event.id)
             .where(
-                Event.start_time.between(start_time, end_time)
-                | Event.end_time.between(start_time, end_time)
+                Event.start_time.between(start_time - 16, end_time) # TODO: read from config
+                | Event.end_time.between(start_time, end_time + 16)
                 | (
                     (start_time > Event.start_time)
                     & (end_time < Event.end_time)
