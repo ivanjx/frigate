@@ -10,7 +10,7 @@ from flask import Blueprint, jsonify, make_response, request
 from peewee import Case, DoesNotExist, fn, operator
 from playhouse.shortcuts import model_to_dict
 
-from frigate.models import Recordings, ReviewSegment
+from frigate.models import Recordings, ReviewSegment, Event
 from frigate.util.builtin import get_tz_modifiers
 
 logger = logging.getLogger(__name__)
@@ -406,6 +406,7 @@ def delete_reviews():
         .iterator()
     )
     recording_ids = []
+    event_ids = []
 
     for review in reviews:
         start_time = review["start_time"]
@@ -429,9 +430,28 @@ def delete_reviews():
         for recording in recordings:
             Path(recording["path"]).unlink(missing_ok=True)
             recording_ids.append(recording["id"])
+        
+        events = (
+            Event.select(Event.id)
+            .where(
+                Event.start_time.between(start_time, end_time)
+                | Event.end_time.between(start_time, end_time)
+                | (
+                    (start_time > Event.start_time)
+                    & (end_time < Event.end_time)
+                )
+            )
+            .where(Event.camera == camera_name)
+            .dicts()
+            .iterator()
+        )
+
+        for event in events:
+            event_ids.append(event["id"])
 
     # delete recordings and review segments
     Recordings.delete().where(Recordings.id << recording_ids).execute()
+    Event.delete().where(Event.id << list_of_ids).execute()
     ReviewSegment.delete().where(ReviewSegment.id << list_of_ids).execute()
 
     return make_response(jsonify({"success": True, "message": "Delete reviews"}), 200)
