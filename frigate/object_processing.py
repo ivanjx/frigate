@@ -878,14 +878,12 @@ class CameraState:
                 c(self.name, self.best_objects[obj_name], frame_time)
 
         # cleanup thumbnail frame cache
-        current_thumb_frames = set()
-        if obj.thumbnail_data is not None and "frame_time" in obj.thumbnail_data:
-            current_thumb_frames = {
-                obj.thumbnail_data["frame_time"]
-                for obj in tracked_objects.values()
-                if not obj.false_positive
-            }
-
+        current_thumb_frames = {
+            obj.thumbnail_data["frame_time"]
+            for obj in tracked_objects.values()
+            if obj.thumbnail_data is not None and "frame_time" in obj.thumbnail_data and not obj.false_positive
+        }
+            
         current_best_frames = {
             obj.thumbnail_data["frame_time"] for obj in self.best_objects.values()
         }
