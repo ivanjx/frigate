@@ -1,6 +1,18 @@
 import { isDesktop, isIOS, isMobile } from "react-device-detect";
-import { Sheet, SheetContent } from "../../ui/sheet";
-import { Drawer, DrawerContent } from "../../ui/drawer";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "../../ui/sheet";
+import {
+  Drawer,
+  DrawerContent,
+  DrawerDescription,
+  DrawerHeader,
+  DrawerTitle,
+} from "../../ui/drawer";
 import useSWR from "swr";
 import { FrigateConfig } from "@/types/frigateConfig";
 import { useFormattedTimestamp } from "@/hooks/use-date-utils";
@@ -13,7 +25,7 @@ import { cn } from "@/lib/utils";
 import { FrigatePlusDialog } from "../dialog/FrigatePlusDialog";
 import ObjectLifecycle from "./ObjectLifecycle";
 import Chip from "@/components/indicators/Chip";
-import { FaDownload } from "react-icons/fa";
+import { FaDownload, FaImages } from "react-icons/fa";
 import FrigatePlusIcon from "@/components/icons/FrigatePlusIcon";
 import { FaArrowsRotate } from "react-icons/fa6";
 import {
@@ -21,6 +33,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useNavigate } from "react-router-dom";
 
 type ReviewDetailDialogProps = {
   review?: ReviewSegment;
@@ -66,6 +79,9 @@ export default function ReviewDetailDialog({
 
   const Overlay = isDesktop ? Sheet : Drawer;
   const Content = isDesktop ? SheetContent : DrawerContent;
+  const Header = isDesktop ? SheetHeader : DrawerHeader;
+  const Title = isDesktop ? SheetTitle : DrawerTitle;
+  const Description = isDesktop ? SheetDescription : DrawerDescription;
 
   if (!review) {
     return;
@@ -102,6 +118,10 @@ export default function ReviewDetailDialog({
               : "max-h-[80dvh] overflow-hidden p-2 pb-4",
           )}
         >
+          <Header className="sr-only">
+            <Title>Review Item Details</Title>
+            <Description>Review item details</Description>
+          </Header>
           {pane == "overview" && (
             <div className="scrollbar-container mt-3 flex size-full flex-col gap-5 overflow-y-auto">
               <div className="flex w-full flex-row">
@@ -215,6 +235,8 @@ function EventItem({
 
   const [hovered, setHovered] = useState(isMobile);
 
+  const navigate = useNavigate();
+
   return (
     <>
       <div
@@ -307,6 +329,27 @@ function EventItem({
                     </Chip>
                   </TooltipTrigger>
                   <TooltipContent>View Object Lifecycle</TooltipContent>
+                </Tooltip>
+              )}
+
+              {event.has_snapshot && config?.semantic_search.enabled && (
+                <Tooltip>
+                  <TooltipTrigger>
+                    <Chip
+                      className="cursor-pointer rounded-md bg-gray-500 bg-gradient-to-br from-gray-400 to-gray-500"
+                      onClick={() => {
+                        const similaritySearchParams = new URLSearchParams({
+                          search_type: "similarity",
+                          event_id: event.id,
+                        }).toString();
+
+                        navigate(`/search?${similaritySearchParams}`);
+                      }}
+                    >
+                      <FaImages className="size-4 text-white" />
+                    </Chip>
+                  </TooltipTrigger>
+                  <TooltipContent>Find Similar</TooltipContent>
                 </Tooltip>
               )}
             </div>

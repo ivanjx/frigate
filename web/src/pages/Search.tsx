@@ -1,9 +1,13 @@
-import useApiFilter from "@/hooks/use-api-filter";
+import { useApiFilterArgs } from "@/hooks/use-api-filter";
 import { useCameraPreviews } from "@/hooks/use-camera-previews";
 import { useOverlayState } from "@/hooks/use-overlay-state";
 import { FrigateConfig } from "@/types/frigateConfig";
 import { RecordingStartingPoint } from "@/types/record";
-import { SearchFilter, SearchResult } from "@/types/search";
+import {
+  PartialSearchResult,
+  SearchFilter,
+  SearchResult,
+} from "@/types/search";
 import { TimeRange } from "@/types/timeline";
 import { RecordingView } from "@/views/recording/RecordingView";
 import SearchView from "@/views/search/SearchView";
@@ -27,7 +31,7 @@ export default function Search() {
   // search filter
 
   const [searchFilter, setSearchFilter, searchSearchParams] =
-    useApiFilter<SearchFilter>();
+    useApiFilterArgs<SearchFilter>();
 
   const onUpdateFilter = useCallback(
     (newFilter: SearchFilter) => {
@@ -38,7 +42,27 @@ export default function Search() {
 
   // search api
 
-  const [similaritySearch, setSimilaritySearch] = useState<SearchResult>();
+  const [similaritySearch, setSimilaritySearch] =
+    useState<PartialSearchResult>();
+
+  useEffect(() => {
+    if (
+      config?.semantic_search.enabled &&
+      searchSearchParams["search_type"] == "similarity" &&
+      searchSearchParams["event_id"]?.length != 0 &&
+      searchFilter
+    ) {
+      setSimilaritySearch({
+        id: searchSearchParams["event_id"],
+      });
+
+      // remove event id from url params
+      const { event_id: _event_id, ...newFilter } = searchFilter;
+      setSearchFilter(newFilter);
+    }
+    // only run similarity search with event_id in the url when coming from review
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (similaritySearch) {
@@ -53,17 +77,13 @@ export default function Search() {
       setTimeout(() => {
         setSearchTimeout(undefined);
         setSearchTerm(search);
-      }, 500),
+      }, 750),
     );
     // we only want to update the searchTerm when search changes
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
   const searchQuery = useMemo(() => {
-    if (searchTerm.length == 0) {
-      return null;
-    }
-
     if (similaritySearch) {
       return [
         "events/search",
@@ -71,24 +91,45 @@ export default function Search() {
           query: similaritySearch.id,
           cameras: searchSearchParams["cameras"],
           labels: searchSearchParams["labels"],
+          sub_labels: searchSearchParams["subLabels"],
           zones: searchSearchParams["zones"],
           before: searchSearchParams["before"],
           after: searchSearchParams["after"],
           include_thumbnails: 0,
-          search_type: "thumbnail",
+          search_type: "similarity",
+        },
+      ];
+    }
+
+    if (searchTerm) {
+      return [
+        "events/search",
+        {
+          query: searchTerm,
+          cameras: searchSearchParams["cameras"],
+          labels: searchSearchParams["labels"],
+          sub_labels: searchSearchParams["subLabels"],
+          zones: searchSearchParams["zones"],
+          before: searchSearchParams["before"],
+          after: searchSearchParams["after"],
+          search_type: searchSearchParams["search_type"],
+          include_thumbnails: 0,
         },
       ];
     }
 
     return [
-      "events/search",
+      "events",
       {
-        query: searchTerm,
         cameras: searchSearchParams["cameras"],
         labels: searchSearchParams["labels"],
+        sub_labels: searchSearchParams["subLabels"],
         zones: searchSearchParams["zones"],
         before: searchSearchParams["before"],
         after: searchSearchParams["after"],
+        search_type: searchSearchParams["search_type"],
+        limit: Object.keys(searchSearchParams).length == 0 ? 20 : null,
+        in_progress: 0,
         include_thumbnails: 0,
       },
     ];
@@ -192,6 +233,7 @@ export default function Search() {
         allPreviews={allPreviews}
         isLoading={isLoading}
         setSearch={setSearch}
+        similaritySearch={similaritySearch}
         setSimilaritySearch={setSimilaritySearch}
         onUpdateFilter={onUpdateFilter}
         onOpenSearch={onOpenSearch}

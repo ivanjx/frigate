@@ -1,6 +1,18 @@
 import { isDesktop, isIOS } from "react-device-detect";
-import { Sheet, SheetContent } from "../../ui/sheet";
-import { Drawer, DrawerContent } from "../../ui/drawer";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "../../ui/sheet";
+import {
+  Drawer,
+  DrawerContent,
+  DrawerDescription,
+  DrawerHeader,
+  DrawerTitle,
+} from "../../ui/drawer";
 import { SearchResult } from "@/types/search";
 import useSWR from "swr";
 import { FrigateConfig } from "@/types/frigateConfig";
@@ -8,7 +20,7 @@ import { useFormattedTimestamp } from "@/hooks/use-date-utils";
 import { getIconForLabel } from "@/utils/iconUtil";
 import { useApiHost } from "@/api";
 import { Button } from "../../ui/button";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import { toast } from "sonner";
 import { Textarea } from "../../ui/textarea";
@@ -43,6 +55,28 @@ export default function SearchDetailDialog({
       : "%b %-d %Y, %I:%M %p",
   );
 
+  const score = useMemo(() => {
+    if (!search) {
+      return 0;
+    }
+
+    const value = search.score ?? search.data.top_score;
+
+    return Math.round(value * 100);
+  }, [search]);
+
+  const subLabelScore = useMemo(() => {
+    if (!search) {
+      return undefined;
+    }
+
+    if (search.sub_label) {
+      return Math.round((search.data?.top_score ?? 0) * 100);
+    } else {
+      return undefined;
+    }
+  }, [search]);
+
   // api
 
   const updateDescription = useCallback(() => {
@@ -71,6 +105,9 @@ export default function SearchDetailDialog({
 
   const Overlay = isDesktop ? Sheet : Drawer;
   const Content = isDesktop ? SheetContent : DrawerContent;
+  const Header = isDesktop ? SheetHeader : DrawerHeader;
+  const Title = isDesktop ? SheetTitle : DrawerTitle;
+  const Description = isDesktop ? SheetDescription : DrawerDescription;
 
   return (
     <Overlay
@@ -86,6 +123,10 @@ export default function SearchDetailDialog({
           isDesktop ? "sm:max-w-xl" : "max-h-[75dvh] overflow-hidden p-2 pb-4"
         }
       >
+        <Header className="sr-only">
+          <Title>Tracked Object Details</Title>
+          <Description>Tracked object details</Description>
+        </Header>
         {search && (
           <div className="mt-3 flex size-full flex-col gap-5 md:mt-0">
             <div className="flex w-full flex-row">
@@ -93,14 +134,15 @@ export default function SearchDetailDialog({
                 <div className="flex flex-col gap-1.5">
                   <div className="text-sm text-primary/40">Label</div>
                   <div className="flex flex-row items-center gap-2 text-sm capitalize">
-                    {getIconForLabel(search.label, "size-4 text-white")}
+                    {getIconForLabel(search.label, "size-4 text-primary")}
                     {search.label}
+                    {search.sub_label && ` (${search.sub_label})`}
                   </div>
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <div className="text-sm text-primary/40">Score</div>
                   <div className="text-sm">
-                    {Math.round(search.score * 100)}%
+                    {score}%{subLabelScore && ` (${subLabelScore}%)`}
                   </div>
                 </div>
                 <div className="flex flex-col gap-1.5">

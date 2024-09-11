@@ -778,6 +778,7 @@ class CameraState:
                 or obj.thumbnail_data["frame_time"] != frame_time
             ):
                 continue
+
             
             if object_type in self.best_objects:
                 current_best = self.best_objects[object_type]
@@ -881,7 +882,7 @@ class CameraState:
         current_thumb_frames = {
             obj.thumbnail_data["frame_time"]
             for obj in tracked_objects.values()
-            if obj.thumbnail_data is not None and "frame_time" in obj.thumbnail_data and not obj.false_positive
+            if not obj.false_positive and obj.thumbnail_data is not None
         }
             
         current_best_frames = {
