@@ -20,6 +20,7 @@ import { capitalizeFirstLetter } from "@/utils/stringUtil";
 import { cn } from "@/lib/utils";
 import { InProgressPreview, VideoPreview } from "../preview/ScrubbablePreview";
 import { Preview } from "@/types/preview";
+import { baseUrl } from "@/api/baseUrl";
 
 type PreviewPlayerProps = {
   review: ReviewSegment;
@@ -167,6 +168,7 @@ export default function PreviewThumbnailPlayer({
   const formattedDate = useFormattedTimestamp(
     review.start_time,
     config?.ui.time_format == "24hour" ? "%b %-d, %H:%M" : "%b %-d, %I:%M %p",
+    config?.ui?.timezone,
   );
 
   return (
@@ -175,6 +177,9 @@ export default function PreviewThumbnailPlayer({
       onMouseOver={isMobile ? undefined : () => setIsHovered(true)}
       onMouseLeave={isMobile ? undefined : () => setIsHovered(false)}
       onClick={handleOnClick}
+      onAuxClick={() =>
+        window.open(`${baseUrl}review?id=${review.id}`, "_blank")?.focus()
+      }
       {...swipeHandlers}
     >
       {playingBack && (
