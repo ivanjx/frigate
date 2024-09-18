@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -762,8 +763,14 @@ class GenAIConfig(FrigateBaseModel):
     object_prompts: Dict[str, str] = Field(default={}, title="Object specific prompts.")
 
 
-class GenAICameraConfig(FrigateBaseModel):
+# uses BaseModel because some global attributes are not available at the camera level
+class GenAICameraConfig(BaseModel):
     enabled: bool = Field(default=False, title="Enable GenAI for camera.")
+    prompt: str = Field(
+        default="Describe the {label} in the sequence of images with as much detail as possible. Do not describe the background.",
+        title="Default caption prompt.",
+    )
+    object_prompts: Dict[str, str] = Field(default={}, title="Object specific prompts.")
 
 
 class AudioConfig(FrigateBaseModel):
@@ -888,12 +895,12 @@ class FfmpegConfig(FrigateBaseModel):
     @property
     def ffmpeg_path(self) -> str:
         if self.path == "default":
-            if int(os.getenv("LIBAVFORMAT_VERSION_MAJOR", "59")) >= 59:
-                return "/usr/lib/ffmpeg/7.0/bin/ffmpeg"
+            if shutil.which("ffmpeg") is None:
+                return "/usr/lib/ffmpeg/6.0/bin/ffmpeg"
             else:
                 return "ffmpeg"
-        elif self.path == "7.0":
-            return "/usr/lib/ffmpeg/7.0/bin/ffmpeg"
+        elif self.path == "6.0":
+            return "/usr/lib/ffmpeg/6.0/bin/ffmpeg"
         elif self.path == "5.0":
             return "/usr/lib/ffmpeg/5.0/bin/ffmpeg"
         else:
@@ -903,11 +910,11 @@ class FfmpegConfig(FrigateBaseModel):
     def ffprobe_path(self) -> str:
         if self.path == "default":
             if int(os.getenv("LIBAVFORMAT_VERSION_MAJOR", "59")) >= 59:
-                return "/usr/lib/ffmpeg/7.0/bin/ffprobe"
+                return "/usr/lib/ffmpeg/6.0/bin/ffprobe"
             else:
                 return "ffprobe"
-        elif self.path == "7.0":
-            return "/usr/lib/ffmpeg/7.0/bin/ffprobe"
+        elif self.path == "6.0":
+            return "/usr/lib/ffmpeg/6.0/bin/ffprobe"
         elif self.path == "5.0":
             return "/usr/lib/ffmpeg/5.0/bin/ffprobe"
         else:
@@ -1187,7 +1194,7 @@ class CameraConfig(FrigateBaseModel):
                 + ffmpeg_output_args
             )
 
-        # if there arent any outputs enabled for this input
+        # if there aren't any outputs enabled for this input
         if len(ffmpeg_output_args) == 0:
             return None
 
@@ -1225,7 +1232,7 @@ class CameraConfig(FrigateBaseModel):
         cmd = (
             [self.ffmpeg.ffmpeg_path]
             + global_args
-            + hwaccel_args
+            + (hwaccel_args if "detect" in ffmpeg_input.roles else [])
             + input_args
             + ["-i", escape_special_characters(ffmpeg_input.path)]
             + ffmpeg_output_args
@@ -1519,7 +1526,7 @@ class FrigateConfig(FrigateBaseModel):
                 "live": ...,
                 "objects": ...,
                 "review": ...,
-                "genai": {"enabled"},
+                "genai": ...,
                 "motion": ...,
                 "detect": ...,
                 "ffmpeg": ...,
