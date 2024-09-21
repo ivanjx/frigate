@@ -1,8 +1,8 @@
 import { useApiFilterArgs } from "@/hooks/use-api-filter";
-import { useSearchEffect } from "@/hooks/use-overlay-state";
 import { SearchFilter, SearchQuery, SearchResult } from "@/types/search";
 import SearchView from "@/views/search/SearchView";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { TbExclamationCircle } from "react-icons/tb";
 import useSWRInfinite from "swr/infinite";
 
 const API_LIMIT = 25;
@@ -20,37 +20,22 @@ export default function Explore() {
     [searchSearchParams],
   );
 
-  // search filter
-
-  const similaritySearch = useMemo(() => {
-    if (!searchTerm.includes("similarity:")) {
-      return undefined;
-    }
-
-    return searchTerm.split(":")[1];
-  }, [searchTerm]);
-
-  // search api
-
-  useSearchEffect("query", (query) => {
-    setSearch(query);
-    return false;
-  });
-
-  useSearchEffect("similarity_search_id", (similarityId) => {
-    setSearch(`similarity:${similarityId}`);
-    // @ts-expect-error we want to clear this
-    setSearchFilter({ ...searchFilter, similarity_search_id: undefined });
-    return false;
-  });
+  const similaritySearch = useMemo(
+    () => searchSearchParams["search_type"] == "similarity",
+    [searchSearchParams],
+  );
 
   useEffect(() => {
     if (!searchTerm && !search) {
       return;
     }
 
+    // switch back to normal search when query is entered
     setSearchFilter({
       ...searchFilter,
+      search_type:
+        similaritySearch && search ? undefined : searchFilter?.search_type,
+      event_id: similaritySearch && search ? undefined : searchFilter?.event_id,
       query: search.length > 0 ? search : undefined,
     });
     // only update when search is updated
@@ -58,41 +43,18 @@ export default function Explore() {
   }, [search]);
 
   const searchQuery: SearchQuery = useMemo(() => {
-    if (similaritySearch) {
-      return [
-        "events/search",
-        {
-          query: similaritySearch,
-          cameras: searchSearchParams["cameras"],
-          labels: searchSearchParams["labels"],
-          sub_labels: searchSearchParams["subLabels"],
-          zones: searchSearchParams["zones"],
-          before: searchSearchParams["before"],
-          after: searchSearchParams["after"],
-          include_thumbnails: 0,
-          search_type: "similarity",
-        },
-      ];
+    // no search parameters
+    if (searchSearchParams && Object.keys(searchSearchParams).length === 0) {
+      return null;
     }
 
-    if (searchTerm) {
-      return [
-        "events/search",
-        {
-          query: searchTerm,
-          cameras: searchSearchParams["cameras"],
-          labels: searchSearchParams["labels"],
-          sub_labels: searchSearchParams["subLabels"],
-          zones: searchSearchParams["zones"],
-          before: searchSearchParams["before"],
-          after: searchSearchParams["after"],
-          search_type: searchSearchParams["search_type"],
-          include_thumbnails: 0,
-        },
-      ];
-    }
-
-    if (searchSearchParams && Object.keys(searchSearchParams).length !== 0) {
+    // parameters, but no search term and not similarity
+    if (
+      searchSearchParams &&
+      Object.keys(searchSearchParams).length !== 0 &&
+      !searchTerm &&
+      !similaritySearch
+    ) {
       return [
         "events",
         {
@@ -111,15 +73,38 @@ export default function Explore() {
       ];
     }
 
-    return null;
+    // parameters and search term
+    if (!similaritySearch) {
+      setSearch(searchTerm);
+    }
+
+    return [
+      "events/search",
+      {
+        query: similaritySearch ? undefined : searchTerm,
+        cameras: searchSearchParams["cameras"],
+        labels: searchSearchParams["labels"],
+        sub_labels: searchSearchParams["subLabels"],
+        zones: searchSearchParams["zones"],
+        before: searchSearchParams["before"],
+        after: searchSearchParams["after"],
+        search_type: searchSearchParams["search_type"],
+        event_id: searchSearchParams["event_id"],
+        include_thumbnails: 0,
+      },
+    ];
   }, [searchTerm, searchSearchParams, similaritySearch]);
 
   // paging
+
+  // usually slow only on first run while downloading models
+  const [isSlowLoading, setIsSlowLoading] = useState(false);
 
   const getKey = (
     pageIndex: number,
     previousPageData: SearchResult[] | null,
   ): SearchQuery => {
+    if (isSlowLoading && !similaritySearch) return null;
     if (previousPageData && !previousPageData.length) return null; // reached the end
     if (!searchQuery) return null;
 
@@ -143,6 +128,12 @@ export default function Explore() {
     {
       revalidateFirstPage: true,
       revalidateAll: false,
+      onLoadingSlow: () => {
+        if (!similaritySearch) {
+          setIsSlowLoading(true);
+        }
+      },
+      loadingTimeout: 10000,
     },
   );
 
@@ -174,18 +165,39 @@ export default function Explore() {
   }, [isReachingEnd, isLoadingMore, setSize, size, searchResults, searchQuery]);
 
   return (
-    <SearchView
-      search={search}
-      searchTerm={searchTerm}
-      searchFilter={searchFilter}
-      searchResults={searchResults}
-      isLoading={(isLoadingInitialData || isLoadingMore) ?? true}
-      setSearch={setSearch}
-      setSimilaritySearch={(search) => setSearch(`similarity:${search.id}`)}
-      setSearchFilter={setSearchFilter}
-      onUpdateFilter={setSearchFilter}
-      loadMore={loadMore}
-      hasMore={!isReachingEnd}
-    />
+    <>
+      {isSlowLoading && !similaritySearch ? (
+        <div className="absolute inset-0 left-1/2 top-1/2 flex h-96 w-96 -translate-x-1/2 -translate-y-1/2">
+          <div className="flex flex-col items-center justify-center rounded-lg bg-background/50 p-5">
+            <p className="my-5 text-lg">Search Unavailable</p>
+            <TbExclamationCircle className="mb-3 size-10" />
+            <p className="max-w-96 text-center">
+              If this is your first time using Search, be patient while Frigate
+              downloads the necessary embeddings models. Check Frigate logs.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <SearchView
+          search={search}
+          searchTerm={searchTerm}
+          searchFilter={searchFilter}
+          searchResults={searchResults}
+          isLoading={(isLoadingInitialData || isLoadingMore) ?? true}
+          setSearch={setSearch}
+          setSimilaritySearch={(search) => {
+            setSearchFilter({
+              ...searchFilter,
+              search_type: ["similarity"],
+              event_id: search.id,
+            });
+          }}
+          setSearchFilter={setSearchFilter}
+          onUpdateFilter={setSearchFilter}
+          loadMore={loadMore}
+          hasMore={!isReachingEnd}
+        />
+      )}
+    </>
   );
 }
