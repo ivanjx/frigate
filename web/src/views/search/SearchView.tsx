@@ -22,6 +22,8 @@ import useKeyboardListener, {
 } from "@/hooks/use-keyboard-listener";
 import scrollIntoView from "scroll-into-view-if-needed";
 import InputWithTags from "@/components/input/InputWithTags";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
+import { isEqual } from "lodash";
 
 type SearchViewProps = {
   search: string;
@@ -138,6 +140,21 @@ export default function SearchView({
     setSearchDetail(item);
     setSelectedIndex(index);
   }, []);
+
+  // update search detail when results change
+
+  useEffect(() => {
+    if (searchDetail && searchResults) {
+      const flattenedResults = searchResults.flat();
+      const updatedSearchDetail = flattenedResults.find(
+        (result) => result.id === searchDetail.id,
+      );
+
+      if (updatedSearchDetail && !isEqual(updatedSearchDetail, searchDetail)) {
+        setSearchDetail(updatedSearchDetail);
+      }
+    }
+  }, [searchResults, searchDetail]);
 
   // confidence score - probably needs tweaking
 
@@ -276,13 +293,18 @@ export default function SearchView({
         )}
 
         {hasExistingSearch && (
-          <SearchFilterGroup
-            className={cn(
-              "w-full justify-between md:justify-start lg:justify-end",
-            )}
-            filter={searchFilter}
-            onUpdateFilter={onUpdateFilter}
-          />
+          <ScrollArea className="w-full whitespace-nowrap lg:ml-[35%]">
+            <div className="flex flex-row">
+              <SearchFilterGroup
+                className={cn(
+                  "w-full justify-between md:justify-start lg:justify-end",
+                )}
+                filter={searchFilter}
+                onUpdateFilter={onUpdateFilter}
+              />
+              <ScrollBar orientation="horizontal" className="h-0" />
+            </div>
+          </ScrollArea>
         )}
       </div>
 
@@ -376,7 +398,10 @@ export default function SearchView({
         Object.keys(searchFilter).length === 0 &&
         !searchTerm && (
           <div className="scrollbar-container flex size-full flex-col overflow-y-auto">
-            <ExploreView onSelectSearch={onSelectSearch} />
+            <ExploreView
+              searchDetail={searchDetail}
+              setSearchDetail={setSearchDetail}
+            />
           </div>
         )}
     </div>

@@ -6,10 +6,11 @@ import os
 import shutil
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Annotated, Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -17,8 +18,11 @@ from pydantic import (
     ValidationInfo,
     field_serializer,
     field_validator,
+    model_validator,
 )
 from pydantic.fields import PrivateAttr
+from ruamel.yaml import YAML
+from typing_extensions import Self
 
 from frigate.const import (
     ALL_ATTRIBUTE_LABELS,
@@ -31,7 +35,7 @@ from frigate.const import (
     INCLUDED_FFMPEG_VERSIONS,
     MAX_PRE_CAPTURE,
     REGEX_CAMERA_NAME,
-    YAML_EXT,
+    REGEX_JSON,
 )
 from frigate.detectors import DetectorConfig, ModelConfig
 from frigate.detectors.detector_config import BaseDetectorConfig
@@ -47,13 +51,37 @@ from frigate.util.builtin import (
     escape_special_characters,
     generate_color_palette,
     get_ffmpeg_arg_list,
-    load_config_with_no_duplicates,
 )
-from frigate.util.config import StreamInfoRetriever, get_relative_coordinates
+from frigate.util.config import (
+    StreamInfoRetriever,
+    get_relative_coordinates,
+    migrate_frigate_config,
+)
 from frigate.util.image import create_mask
 from frigate.util.services import auto_detect_hwaccel
 
 logger = logging.getLogger(__name__)
+
+yaml = YAML()
+
+DEFAULT_CONFIG_FILES = ["/config/config.yaml", "/config/config.yml"]
+DEFAULT_CONFIG = """
+mqtt:
+  enabled: False
+
+cameras:
+  name_of_your_camera: # <------ Name the camera
+    enabled: True
+    ffmpeg:
+      inputs:
+        - path: rtsp://10.0.10.10:554/rtsp # <----- The stream you want to use for detection
+          roles:
+            - detect
+    detect:
+      enabled: False # <---- disable detection until you have a working camera feed
+      width: 1280
+      height: 720
+"""
 
 # TODO: Identify what the default format to display timestamps is
 DEFAULT_TIME_FORMAT = "%m/%d/%Y %H:%M:%S"
@@ -103,6 +131,13 @@ class DateTimeStyleEnum(str, Enum):
     short = "short"
 
 
+def validate_env_string(v: str) -> str:
+    return v.format(**FRIGATE_ENV_VARS)
+
+
+EnvString = Annotated[str, AfterValidator(validate_env_string)]
+
+
 class UIConfig(FrigateBaseModel):
     timezone: Optional[str] = Field(default=None, title="Override UI timezone.")
     time_format: TimeFormatEnum = Field(
@@ -137,7 +172,7 @@ class ProxyConfig(FrigateBaseModel):
     logout_url: Optional[str] = Field(
         default=None, title="Redirect url for logging out with proxy."
     )
-    auth_secret: Optional[str] = Field(
+    auth_secret: Optional[EnvString] = Field(
         default=None,
         title="Secret value for proxy authentication.",
     )
@@ -208,8 +243,10 @@ class MqttConfig(FrigateBaseModel):
     stats_interval: int = Field(
         default=60, ge=FREQUENCY_STATS_POINTS, title="MQTT Camera Stats Interval"
     )
-    user: Optional[str] = Field(None, title="MQTT Username")
-    password: Optional[str] = Field(None, title="MQTT Password", validate_default=True)
+    user: Optional[EnvString] = Field(None, title="MQTT Username")
+    password: Optional[EnvString] = Field(
+        None, title="MQTT Password", validate_default=True
+    )
     tls_ca_certs: Optional[str] = Field(None, title="MQTT TLS CA Certificates")
     tls_client_cert: Optional[str] = Field(None, title="MQTT TLS Client Certificate")
     tls_client_key: Optional[str] = Field(None, title="MQTT TLS Client Key")
@@ -284,8 +321,8 @@ class PtzAutotrackConfig(FrigateBaseModel):
 class OnvifConfig(FrigateBaseModel):
     host: str = Field(default="", title="Onvif Host")
     port: int = Field(default=8000, title="Onvif Port")
-    user: Optional[str] = Field(None, title="Onvif Username")
-    password: Optional[str] = Field(None, title="Onvif Password")
+    user: Optional[EnvString] = Field(None, title="Onvif Username")
+    password: Optional[EnvString] = Field(None, title="Onvif Password")
     autotracking: PtzAutotrackConfig = Field(
         default_factory=PtzAutotrackConfig,
         title="PTZ auto tracking config.",
@@ -756,7 +793,7 @@ class GenAIConfig(FrigateBaseModel):
         default=GenAIProviderEnum.openai, title="GenAI provider."
     )
     base_url: Optional[str] = Field(None, title="Provider base url.")
-    api_key: Optional[str] = Field(None, title="Provider API key.")
+    api_key: Optional[EnvString] = Field(None, title="Provider API key.")
     model: str = Field(default="gpt-4o", title="GenAI model.")
     prompt: str = Field(
         default="Describe the {label} in the sequence of images with as much detail as possible. Do not describe the background.",
@@ -926,7 +963,7 @@ class CameraRoleEnum(str, Enum):
 
 
 class CameraInput(FrigateBaseModel):
-    path: str = Field(title="Camera input path.")
+    path: EnvString = Field(title="Camera input path.")
     roles: List[CameraRoleEnum] = Field(title="Roles assigned to this input.")
     global_args: Union[str, List[str]] = Field(
         default_factory=list, title="FFmpeg global arguments."
@@ -1259,6 +1296,19 @@ class LoggerConfig(FrigateBaseModel):
         default_factory=dict, title="Log level for specified processes."
     )
 
+    def install(self):
+        """Install global logging state."""
+        logging.getLogger().setLevel(self.default.value.upper())
+
+        log_levels = {
+            "werkzeug": LogLevelEnum.error,
+            "ws4py": LogLevelEnum.error,
+            **self.logs,
+        }
+
+        for log, level in log_levels.items():
+            logging.getLogger(log).setLevel(level.value.upper())
+
 
 class CameraGroupConfig(FrigateBaseModel):
     """Represents a group of cameras."""
@@ -1346,17 +1396,15 @@ def verify_recording_segments_setup_with_reasonable_time(
     if record_args[0].startswith("preset"):
         return
 
-    seg_arg_index = record_args.index("-segment_time")
-
-    if seg_arg_index < 0:
-        raise ValueError(
-            f"Camera {camera_config.name} has no segment_time in recording output args, segment args are required for record."
-        )
+    try:
+        seg_arg_index = record_args.index("-segment_time")
+    except ValueError:
+        raise ValueError(f"Camera {camera_config.name} has no segment_time in \
+                         recording output args, segment args are required for record.")
 
     if int(record_args[seg_arg_index + 1]) > 60:
-        raise ValueError(
-            f"Camera {camera_config.name} has invalid segment_time output arg, segment_time must be 60 or less."
-        )
+        raise ValueError(f"Camera {camera_config.name} has invalid segment_time output arg, \
+                         segment_time must be 60 or less.")
 
 
 def verify_zone_objects_are_tracked(camera_config: CameraConfig) -> None:
@@ -1481,41 +1529,39 @@ class FrigateConfig(FrigateBaseModel):
     )
     version: Optional[str] = Field(default=None, title="Current config version.")
 
-    def runtime_config(self, plus_api: PlusApi = None) -> FrigateConfig:
-        """Merge camera config with globals."""
-        config = self.model_copy(deep=True)
+    _plus_api: PlusApi
 
-        # Proxy secret substitution
-        if config.proxy.auth_secret:
-            config.proxy.auth_secret = config.proxy.auth_secret.format(
-                **FRIGATE_ENV_VARS
-            )
+    @property
+    def plus_api(self) -> PlusApi:
+        return self._plus_api
 
-        # MQTT user/password substitutions
-        if config.mqtt.user or config.mqtt.password:
-            config.mqtt.user = config.mqtt.user.format(**FRIGATE_ENV_VARS)
-            config.mqtt.password = config.mqtt.password.format(**FRIGATE_ENV_VARS)
+    @model_validator(mode="after")
+    def post_validation(self, info: ValidationInfo) -> Self:
+        # Load plus api from context, if possible.
+        self._plus_api = None
+        if isinstance(info.context, dict):
+            self._plus_api = info.context.get("plus_api")
+
+        # Ensure self._plus_api is set, if no explicit value is provided.
+        if self._plus_api is None:
+            self._plus_api = PlusApi()
 
         # set notifications state
-        config.notifications.enabled_in_config = config.notifications.enabled
-
-        # GenAI substitution
-        if config.genai.api_key:
-            config.genai.api_key = config.genai.api_key.format(**FRIGATE_ENV_VARS)
+        self.notifications.enabled_in_config = self.notifications.enabled
 
         # set default min_score for object attributes
         for attribute in ALL_ATTRIBUTE_LABELS:
-            if not config.objects.filters.get(attribute):
-                config.objects.filters[attribute] = FilterConfig(min_score=0.7)
-            elif config.objects.filters[attribute].min_score == 0.5:
-                config.objects.filters[attribute].min_score = 0.7
+            if not self.objects.filters.get(attribute):
+                self.objects.filters[attribute] = FilterConfig(min_score=0.7)
+            elif self.objects.filters[attribute].min_score == 0.5:
+                self.objects.filters[attribute].min_score = 0.7
 
         # auto detect hwaccel args
-        if config.ffmpeg.hwaccel_args == "auto":
-            config.ffmpeg.hwaccel_args = auto_detect_hwaccel()
+        if self.ffmpeg.hwaccel_args == "auto":
+            self.ffmpeg.hwaccel_args = auto_detect_hwaccel()
 
         # Global config to propagate down to camera level
-        global_config = config.model_dump(
+        global_config = self.model_dump(
             include={
                 "audio": ...,
                 "birdseye": ...,
@@ -1533,7 +1579,7 @@ class FrigateConfig(FrigateBaseModel):
             exclude_unset=True,
         )
 
-        for name, camera in config.cameras.items():
+        for name, camera in self.cameras.items():
             merged_config = deep_merge(
                 camera.model_dump(exclude_unset=True), global_config
             )
@@ -1542,7 +1588,7 @@ class FrigateConfig(FrigateBaseModel):
             )
 
             if camera_config.ffmpeg.hwaccel_args == "auto":
-                camera_config.ffmpeg.hwaccel_args = config.ffmpeg.hwaccel_args
+                camera_config.ffmpeg.hwaccel_args = self.ffmpeg.hwaccel_args
 
             for input in camera_config.ffmpeg.inputs:
                 need_record_fourcc = False and "record" in input.roles
@@ -1555,7 +1601,7 @@ class FrigateConfig(FrigateBaseModel):
                     stream_info = {"width": 0, "height": 0, "fourcc": None}
                     try:
                         stream_info = stream_info_retriever.get_stream_info(
-                            config.ffmpeg, input.path
+                            self.ffmpeg, input.path
                         )
                     except Exception:
                         logger.warn(
@@ -1607,18 +1653,6 @@ class FrigateConfig(FrigateBaseModel):
             if camera_config.detect.stationary.interval is None:
                 camera_config.detect.stationary.interval = stationary_threshold
 
-            # FFMPEG input substitution
-            for input in camera_config.ffmpeg.inputs:
-                input.path = input.path.format(**FRIGATE_ENV_VARS)
-
-            # ONVIF substitution
-            if camera_config.onvif.user or camera_config.onvif.password:
-                camera_config.onvif.user = camera_config.onvif.user.format(
-                    **FRIGATE_ENV_VARS
-                )
-                camera_config.onvif.password = camera_config.onvif.password.format(
-                    **FRIGATE_ENV_VARS
-                )
             # set config pre-value
             camera_config.audio.enabled_in_config = camera_config.audio.enabled
             camera_config.record.enabled_in_config = camera_config.record.enabled
@@ -1685,8 +1719,12 @@ class FrigateConfig(FrigateBaseModel):
             if not camera_config.live.stream_name:
                 camera_config.live.stream_name = name
 
+            # generate the ffmpeg commands
+            camera_config.create_ffmpeg_cmds()
+            self.cameras[name] = camera_config
+
             verify_config_roles(camera_config)
-            verify_valid_live_stream_name(config, camera_config)
+            verify_valid_live_stream_name(self, camera_config)
             verify_recording_retention(camera_config)
             verify_recording_segments_setup_with_reasonable_time(camera_config)
             verify_zone_objects_are_tracked(camera_config)
@@ -1694,20 +1732,16 @@ class FrigateConfig(FrigateBaseModel):
             verify_autotrack_zones(camera_config)
             verify_motion_and_detect(camera_config)
 
-            # generate the ffmpeg commands
-            camera_config.create_ffmpeg_cmds()
-            config.cameras[name] = camera_config
-
         # get list of unique enabled labels for tracking
-        enabled_labels = set(config.objects.track)
+        enabled_labels = set(self.objects.track)
 
-        for _, camera in config.cameras.items():
+        for camera in self.cameras.values():
             enabled_labels.update(camera.objects.track)
 
-        config.model.create_colormap(sorted(enabled_labels))
-        config.model.check_and_load_plus_model(plus_api)
+        self.model.create_colormap(sorted(enabled_labels))
+        self.model.check_and_load_plus_model(self.plus_api)
 
-        for key, detector in config.detectors.items():
+        for key, detector in self.detectors.items():
             adapter = TypeAdapter(DetectorConfig)
             model_dict = (
                 detector
@@ -1716,10 +1750,10 @@ class FrigateConfig(FrigateBaseModel):
             )
             detector_config: DetectorConfig = adapter.validate_python(model_dict)
             if detector_config.model is None:
-                detector_config.model = config.model.model_copy()
+                detector_config.model = self.model.model_copy()
             else:
                 path = detector_config.model.path
-                detector_config.model = config.model.model_copy()
+                detector_config.model = self.model.model_copy()
                 detector_config.model.path = path
 
                 if "path" not in model_dict or len(model_dict.keys()) > 1:
@@ -1729,7 +1763,7 @@ class FrigateConfig(FrigateBaseModel):
 
             merged_model = deep_merge(
                 detector_config.model.model_dump(exclude_unset=True, warnings="none"),
-                config.model.model_dump(exclude_unset=True, warnings="none"),
+                self.model.model_dump(exclude_unset=True, warnings="none"),
             )
 
             if "path" not in merged_model:
@@ -1740,12 +1774,12 @@ class FrigateConfig(FrigateBaseModel):
 
             detector_config.model = ModelConfig.model_validate(merged_model)
             detector_config.model.check_and_load_plus_model(
-                plus_api, detector_config.type
+                self.plus_api, detector_config.type
             )
             detector_config.model.compute_model_hash()
-            config.detectors[key] = detector_config
+            self.detectors[key] = detector_config
 
-        return config
+        return self
 
     @field_validator("cameras")
     @classmethod
@@ -1757,18 +1791,79 @@ class FrigateConfig(FrigateBaseModel):
         return v
 
     @classmethod
-    def parse_file(cls, config_file):
-        with open(config_file) as f:
-            raw_config = f.read()
+    def load(cls, **kwargs):
+        config_path = os.environ.get("CONFIG_FILE")
 
-        if config_file.endswith(YAML_EXT):
-            config = load_config_with_no_duplicates(raw_config)
-        elif config_file.endswith(".json"):
-            config = json.loads(raw_config)
+        # No explicit configuration file, try to find one in the default paths.
+        if config_path is None:
+            for path in DEFAULT_CONFIG_FILES:
+                if os.path.isfile(path):
+                    config_path = path
+                    break
 
-        return cls.model_validate(config)
+        # No configuration file found, create one.
+        new_config = False
+        if config_path is None:
+            logger.info("No config file found, saving default config")
+            config_path = DEFAULT_CONFIG_FILES[-1]
+            new_config = True
+        else:
+            # Check if the config file needs to be migrated.
+            migrate_frigate_config(config_path)
+
+        # Finally, load the resulting configuration file.
+        with open(config_path, "a+") as f:
+            # Only write the default config if the opened file is non-empty. This can happen as
+            # a race condition. It's extremely unlikely, but eh. Might as well check it.
+            if new_config and f.tell() == 0:
+                f.write(DEFAULT_CONFIG)
+                logger.info(
+                    "Created default config file, see the getting started docs \
+                    for configuration https://docs.frigate.video/guides/getting_started"
+                )
+
+            f.seek(0)
+            return FrigateConfig.parse(f, **kwargs)
 
     @classmethod
-    def parse_raw(cls, raw_config):
-        config = load_config_with_no_duplicates(raw_config)
-        return cls.model_validate(config)
+    def parse(cls, config, *, is_json=None, **context):
+        # If config is a file, read its contents.
+        if hasattr(config, "read"):
+            fname = getattr(config, "name", None)
+            config = config.read()
+
+            # Try to guess the value of is_json from the file extension.
+            if is_json is None and fname:
+                _, ext = os.path.splitext(fname)
+                if ext in (".yaml", ".yml"):
+                    is_json = False
+                elif ext == ".json":
+                    is_json = True
+
+        # At this point, try to sniff the config string, to guess if it is json or not.
+        if is_json is None:
+            is_json = REGEX_JSON.match(config) is not None
+
+        # Parse the config into a dictionary.
+        if is_json:
+            config = json.load(config)
+        else:
+            config = yaml.load(config)
+
+        # Validate and return the config dict.
+        return cls.parse_object(config, **context)
+
+    @classmethod
+    def parse_yaml(cls, config_yaml, **context):
+        return cls.parse(config_yaml, is_json=False, **context)
+
+    @classmethod
+    def parse_object(cls, obj: Any, *, plus_api: Optional[PlusApi] = None):
+        return cls.model_validate(obj, context={"plus_api": plus_api})
+
+    def install(self):
+        """Install global state from the config."""
+        self.logger.install()
+
+        for key, value in self.environment_vars.items():
+            os.environ[key] = value
