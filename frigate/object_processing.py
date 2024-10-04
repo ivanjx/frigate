@@ -153,10 +153,7 @@ class TrackedObject:
         decay_factor = 0.8
         weighted_sum = sum(score * (decay_factor ** i) for i, score in enumerate(reversed(self.score_history)))
         weighted_average = weighted_sum / sum(decay_factor ** i for i in range(len(self.score_history)))
-    
-        # Use a threshold to determine if the object is a true positive
-        threshold = self.camera_config.objects.filters[self.obj_data["label"]].threshold
-        return weighted_average > threshold
+        return weighted_average
 
     def update(self, current_frame_time: float, obj_data, has_valid_frame: bool):
         thumb_update = False
