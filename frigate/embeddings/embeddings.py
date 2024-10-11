@@ -3,21 +3,20 @@
 import base64
 import io
 import logging
-import struct
 import time
-from typing import List, Tuple, Union
 
 from PIL import Image
 from playhouse.shortcuts import model_to_dict
 
 from frigate.comms.inter_process import InterProcessRequestor
-from frigate.const import UPDATE_MODEL_STATE
+from frigate.config.semantic_search import SemanticSearchConfig
+from frigate.const import UPDATE_EMBEDDINGS_REINDEX_PROGRESS, UPDATE_MODEL_STATE
 from frigate.db.sqlitevecq import SqliteVecQueueDatabase
 from frigate.models import Event
 from frigate.types import ModelStatusTypesEnum
+from frigate.util.builtin import serialize
 
-from .functions.clip import ClipEmbedding
-from .functions.minilm_l6_v2 import MiniLMEmbedding
+from .functions.onnx import GenericONNXEmbedding
 
 logger = logging.getLogger(__name__)
 
@@ -53,31 +52,26 @@ def get_metadata(event: Event) -> dict:
     )
 
 
-def serialize(vector: List[float]) -> bytes:
-    """Serializes a list of floats into a compact "raw bytes" format"""
-    return struct.pack("%sf" % len(vector), *vector)
-
-
-def deserialize(bytes_data: bytes) -> List[float]:
-    """Deserializes a compact "raw bytes" format into a list of floats"""
-    return list(struct.unpack("%sf" % (len(bytes_data) // 4), bytes_data))
-
-
 class Embeddings:
     """SQLite-vec embeddings database."""
 
-    def __init__(self, db: SqliteVecQueueDatabase) -> None:
+    def __init__(
+        self, config: SemanticSearchConfig, db: SqliteVecQueueDatabase
+    ) -> None:
+        self.config = config
         self.db = db
         self.requestor = InterProcessRequestor()
 
         # Create tables if they don't exist
-        self._create_tables()
+        self.db.create_embeddings_tables()
 
         models = [
-            "sentence-transformers/all-MiniLM-L6-v2-model.onnx",
-            "sentence-transformers/all-MiniLM-L6-v2-tokenizer",
-            "clip-clip_image_model_vitb32.onnx",
-            "clip-clip_text_model_vitb32.onnx",
+            "jinaai/jina-clip-v1-text_model_fp16.onnx",
+            "jinaai/jina-clip-v1-tokenizer",
+            "jinaai/jina-clip-v1-vision_model_fp16.onnx"
+            if config.model_size == "large"
+            else "jinaai/jina-clip-v1-vision_model_quantized.onnx",
+            "jinaai/jina-clip-v1-preprocessor_config.json",
         ]
 
         for model in models:
@@ -89,35 +83,52 @@ class Embeddings:
                 },
             )
 
-        self.clip_embedding = ClipEmbedding(
-            preferred_providers=["CPUExecutionProvider"]
-        )
-        self.minilm_embedding = MiniLMEmbedding(
-            preferred_providers=["CPUExecutionProvider"],
+        def jina_text_embedding_function(outputs):
+            return outputs[0]
+
+        def jina_vision_embedding_function(outputs):
+            return outputs[0]
+
+        self.text_embedding = GenericONNXEmbedding(
+            model_name="jinaai/jina-clip-v1",
+            model_file="text_model_fp16.onnx",
+            tokenizer_file="tokenizer",
+            download_urls={
+                "text_model_fp16.onnx": "https://huggingface.co/jinaai/jina-clip-v1/resolve/main/onnx/text_model_fp16.onnx",
+            },
+            embedding_function=jina_text_embedding_function,
+            model_size=config.model_size,
+            model_type="text",
+            requestor=self.requestor,
+            device="CPU",
         )
 
-    def _create_tables(self):
-        # Create vec0 virtual table for thumbnail embeddings
-        self.db.execute_sql("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS vec_thumbnails USING vec0(
-                id TEXT PRIMARY KEY,
-                thumbnail_embedding FLOAT[512]
-            );
-        """)
+        model_file = (
+            "vision_model_fp16.onnx"
+            if self.config.model_size == "large"
+            else "vision_model_quantized.onnx"
+        )
 
-        # Create vec0 virtual table for description embeddings
-        self.db.execute_sql("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS vec_descriptions USING vec0(
-                id TEXT PRIMARY KEY,
-                description_embedding FLOAT[384]
-            );
-        """)
+        download_urls = {
+            model_file: f"https://huggingface.co/jinaai/jina-clip-v1/resolve/main/onnx/{model_file}",
+            "preprocessor_config.json": "https://huggingface.co/jinaai/jina-clip-v1/resolve/main/preprocessor_config.json",
+        }
+
+        self.vision_embedding = GenericONNXEmbedding(
+            model_name="jinaai/jina-clip-v1",
+            model_file=model_file,
+            download_urls=download_urls,
+            embedding_function=jina_vision_embedding_function,
+            model_size=config.model_size,
+            model_type="vision",
+            requestor=self.requestor,
+            device=self.config.device,
+        )
 
     def upsert_thumbnail(self, event_id: str, thumbnail: bytes):
         # Convert thumbnail bytes to PIL Image
         image = Image.open(io.BytesIO(thumbnail)).convert("RGB")
-        # Generate embedding using CLIP
-        embedding = self.clip_embedding([image])[0]
+        embedding = self.vision_embedding([image])[0]
 
         self.db.execute_sql(
             """
@@ -130,9 +141,7 @@ class Embeddings:
         return embedding
 
     def upsert_description(self, event_id: str, description: str):
-        # Generate embedding using MiniLM
-        embedding = self.minilm_embedding([description])[0]
-
+        embedding = self.text_embedding([description])[0]
         self.db.execute_sql(
             """
             INSERT OR REPLACE INTO vec_descriptions(id, description_embedding)
@@ -143,117 +152,39 @@ class Embeddings:
 
         return embedding
 
-    def delete_thumbnail(self, event_ids: List[str]) -> None:
-        ids = ",".join(["?" for _ in event_ids])
-        self.db.execute_sql(
-            f"DELETE FROM vec_thumbnails WHERE id IN ({ids})", event_ids
-        )
-
-    def delete_description(self, event_ids: List[str]) -> None:
-        ids = ",".join(["?" for _ in event_ids])
-        self.db.execute_sql(
-            f"DELETE FROM vec_descriptions WHERE id IN ({ids})", event_ids
-        )
-
-    def search_thumbnail(
-        self, query: Union[Event, str], event_ids: List[str] = None
-    ) -> List[Tuple[str, float]]:
-        if query.__class__ == Event:
-            cursor = self.db.execute_sql(
-                """
-                SELECT thumbnail_embedding FROM vec_thumbnails WHERE id = ?
-                """,
-                [query.id],
-            )
-
-            row = cursor.fetchone() if cursor else None
-
-            if row:
-                query_embedding = deserialize(
-                    row[0]
-                )  # Deserialize the thumbnail embedding
-            else:
-                # If no embedding found, generate it and return it
-                thumbnail = base64.b64decode(query.thumbnail)
-                query_embedding = self.upsert_thumbnail(query.id, thumbnail)
-        else:
-            query_embedding = self.clip_embedding([query])[0]
-
-        sql_query = """
-            SELECT
-                id,
-                distance
-            FROM vec_thumbnails
-            WHERE thumbnail_embedding MATCH ?
-                AND k = 100
-        """
-
-        # Add the IN clause if event_ids is provided and not empty
-        # this is the only filter supported by sqlite-vec as of 0.1.3
-        # but it seems to be broken in this version
-        if event_ids:
-            sql_query += " AND id IN ({})".format(",".join("?" * len(event_ids)))
-
-        # order by distance DESC is not implemented in this version of sqlite-vec
-        # when it's implemented, we can use cosine similarity
-        sql_query += " ORDER BY distance"
-
-        parameters = (
-            [serialize(query_embedding)] + event_ids
-            if event_ids
-            else [serialize(query_embedding)]
-        )
-
-        results = self.db.execute_sql(sql_query, parameters).fetchall()
-
-        return results
-
-    def search_description(
-        self, query_text: str, event_ids: List[str] = None
-    ) -> List[Tuple[str, float]]:
-        query_embedding = self.minilm_embedding([query_text])[0]
-
-        # Prepare the base SQL query
-        sql_query = """
-            SELECT
-                id,
-                distance
-            FROM vec_descriptions
-            WHERE description_embedding MATCH ?
-                AND k = 100
-        """
-
-        # Add the IN clause if event_ids is provided and not empty
-        # this is the only filter supported by sqlite-vec as of 0.1.3
-        # but it seems to be broken in this version
-        if event_ids:
-            sql_query += " AND id IN ({})".format(",".join("?" * len(event_ids)))
-
-        # order by distance DESC is not implemented in this version of sqlite-vec
-        # when it's implemented, we can use cosine similarity
-        sql_query += " ORDER BY distance"
-
-        parameters = (
-            [serialize(query_embedding)] + event_ids
-            if event_ids
-            else [serialize(query_embedding)]
-        )
-
-        results = self.db.execute_sql(sql_query, parameters).fetchall()
-
-        return results
-
     def reindex(self) -> None:
-        logger.info("Indexing event embeddings...")
+        logger.info("Indexing tracked object embeddings...")
+
+        self.db.drop_embeddings_tables()
+        logger.debug("Dropped embeddings tables.")
+        self.db.create_embeddings_tables()
+        logger.debug("Created embeddings tables.")
 
         st = time.time()
         totals = {
-            "thumb": 0,
-            "desc": 0,
+            "thumbnails": 0,
+            "descriptions": 0,
+            "processed_objects": 0,
+            "total_objects": 0,
         }
+
+        self.requestor.send_data(UPDATE_EMBEDDINGS_REINDEX_PROGRESS, totals)
+
+        # Get total count of events to process
+        total_events = (
+            Event.select()
+            .where(
+                (Event.has_clip == True | Event.has_snapshot == True)
+                & Event.thumbnail.is_null(False)
+            )
+            .count()
+        )
+        totals["total_objects"] = total_events
 
         batch_size = 100
         current_page = 1
+        processed_events = 0
+
         events = (
             Event.select()
             .where(
@@ -269,11 +200,29 @@ class Embeddings:
             for event in events:
                 thumbnail = base64.b64decode(event.thumbnail)
                 self.upsert_thumbnail(event.id, thumbnail)
-                totals["thumb"] += 1
+                totals["thumbnails"] += 1
+
                 if description := event.data.get("description", "").strip():
-                    totals["desc"] += 1
+                    totals["descriptions"] += 1
                     self.upsert_description(event.id, description)
 
+                totals["processed_objects"] += 1
+
+                # report progress every 10 events so we don't spam the logs
+                if (totals["processed_objects"] % 10) == 0:
+                    progress = (processed_events / total_events) * 100
+                    logger.debug(
+                        "Processed %d/%d events (%.2f%% complete) | Thumbnails: %d, Descriptions: %d",
+                        processed_events,
+                        total_events,
+                        progress,
+                        totals["thumbnails"],
+                        totals["descriptions"],
+                    )
+
+                self.requestor.send_data(UPDATE_EMBEDDINGS_REINDEX_PROGRESS, totals)
+
+            # Move to the next page
             current_page += 1
             events = (
                 Event.select()
@@ -287,7 +236,8 @@ class Embeddings:
 
         logger.info(
             "Embedded %d thumbnails and %d descriptions in %s seconds",
-            totals["thumb"],
-            totals["desc"],
+            totals["thumbnails"],
+            totals["descriptions"],
             time.time() - st,
         )
+        self.requestor.send_data(UPDATE_EMBEDDINGS_REINDEX_PROGRESS, totals)

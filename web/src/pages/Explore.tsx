@@ -1,5 +1,10 @@
-import { useEventUpdate, useModelState } from "@/api/ws";
+import {
+  useEmbeddingsReindexProgress,
+  useEventUpdate,
+  useModelState,
+} from "@/api/ws";
 import ActivityIndicator from "@/components/indicators/activity-indicator";
+import AnimatedCircularProgressBar from "@/components/ui/circular-progress-bar";
 import { useApiFilterArgs } from "@/hooks/use-api-filter";
 import { useTimezone } from "@/hooks/use-date-utils";
 import { FrigateConfig } from "@/types/frigateConfig";
@@ -182,33 +187,48 @@ export default function Explore() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventUpdate]);
 
+  // embeddings reindex progress
+
+  const { payload: reindexProgress } = useEmbeddingsReindexProgress();
+
+  const embeddingsReindexing = useMemo(
+    () =>
+      reindexProgress
+        ? reindexProgress.total_objects - reindexProgress.processed_objects > 0
+        : undefined,
+    [reindexProgress],
+  );
+
   // model states
 
-  const { payload: minilmModelState } = useModelState(
-    "sentence-transformers/all-MiniLM-L6-v2-model.onnx",
+  const { payload: textModelState } = useModelState(
+    "jinaai/jina-clip-v1-text_model_fp16.onnx",
   );
-  const { payload: minilmTokenizerState } = useModelState(
-    "sentence-transformers/all-MiniLM-L6-v2-tokenizer",
+  const { payload: textTokenizerState } = useModelState(
+    "jinaai/jina-clip-v1-tokenizer",
   );
-  const { payload: clipImageModelState } = useModelState(
-    "clip-clip_image_model_vitb32.onnx",
-  );
-  const { payload: clipTextModelState } = useModelState(
-    "clip-clip_text_model_vitb32.onnx",
+  const modelFile =
+    config?.semantic_search.model_size === "large"
+      ? "jinaai/jina-clip-v1-vision_model_fp16.onnx"
+      : "jinaai/jina-clip-v1-vision_model_quantized.onnx";
+
+  const { payload: visionModelState } = useModelState(modelFile);
+  const { payload: visionFeatureExtractorState } = useModelState(
+    "jinaai/jina-clip-v1-preprocessor_config.json",
   );
 
   const allModelsLoaded = useMemo(() => {
     return (
-      minilmModelState === "downloaded" &&
-      minilmTokenizerState === "downloaded" &&
-      clipImageModelState === "downloaded" &&
-      clipTextModelState === "downloaded"
+      textModelState === "downloaded" &&
+      textTokenizerState === "downloaded" &&
+      visionModelState === "downloaded" &&
+      visionFeatureExtractorState === "downloaded"
     );
   }, [
-    minilmModelState,
-    minilmTokenizerState,
-    clipImageModelState,
-    clipTextModelState,
+    textModelState,
+    textTokenizerState,
+    visionModelState,
+    visionFeatureExtractorState,
   ]);
 
   const renderModelStateIcon = (modelState: ModelState) => {
@@ -226,10 +246,10 @@ export default function Explore() {
 
   if (
     config?.semantic_search.enabled &&
-    (!minilmModelState ||
-      !minilmTokenizerState ||
-      !clipImageModelState ||
-      !clipTextModelState)
+    (!textModelState ||
+      !textTokenizerState ||
+      !visionModelState ||
+      !visionFeatureExtractorState)
   ) {
     return (
       <ActivityIndicator className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2" />
@@ -238,58 +258,101 @@ export default function Explore() {
 
   return (
     <>
-      {config?.semantic_search.enabled && !allModelsLoaded ? (
+      {config?.semantic_search.enabled &&
+      (!allModelsLoaded || embeddingsReindexing) ? (
         <div className="absolute inset-0 left-1/2 top-1/2 flex h-96 w-96 -translate-x-1/2 -translate-y-1/2">
-          <div className="flex flex-col items-center justify-center space-y-3 rounded-lg bg-background/50 p-5">
+          <div className="flex max-w-96 flex-col items-center justify-center space-y-3 rounded-lg bg-background/50 p-5">
             <div className="my-5 flex flex-col items-center gap-2 text-xl">
               <TbExclamationCircle className="mb-3 size-10" />
               <div>Search Unavailable</div>
             </div>
-            <div className="max-w-96 text-center">
-              Frigate is downloading the necessary embeddings models to support
-              semantic searching. This may take several minutes depending on the
-              speed of your network connection.
-            </div>
-            <div className="flex w-96 flex-col gap-2 py-5">
-              <div className="flex flex-row items-center justify-center gap-2">
-                {renderModelStateIcon(clipImageModelState)}
-                CLIP image model
-              </div>
-              <div className="flex flex-row items-center justify-center gap-2">
-                {renderModelStateIcon(clipTextModelState)}
-                CLIP text model
-              </div>
-              <div className="flex flex-row items-center justify-center gap-2">
-                {renderModelStateIcon(minilmModelState)}
-                MiniLM sentence model
-              </div>
-              <div className="flex flex-row items-center justify-center gap-2">
-                {renderModelStateIcon(minilmTokenizerState)}
-                MiniLM tokenizer
-              </div>
-            </div>
-            {(minilmModelState === "error" ||
-              clipImageModelState === "error" ||
-              clipTextModelState === "error") && (
-              <div className="my-3 max-w-96 text-center text-danger">
-                An error has occurred. Check Frigate logs.
-              </div>
+            {embeddingsReindexing && (
+              <>
+                <div className="text-center text-primary-variant">
+                  Search can be used after tracked object embeddings have
+                  finished reindexing.
+                </div>
+                <div className="pt-5 text-center">
+                  <AnimatedCircularProgressBar
+                    min={0}
+                    max={reindexProgress.total_objects}
+                    value={reindexProgress.processed_objects}
+                    gaugePrimaryColor="hsl(var(--selected))"
+                    gaugeSecondaryColor="hsl(var(--secondary))"
+                  />
+                </div>
+                <div className="flex w-96 flex-col gap-2 py-5">
+                  <div className="flex flex-row items-center justify-center gap-3">
+                    <span className="text-primary-variant">
+                      Thumbnails embedded:
+                    </span>
+                    {reindexProgress.thumbnails}
+                  </div>
+                  <div className="flex flex-row items-center justify-center gap-3">
+                    <span className="text-primary-variant">
+                      Descriptions embedded:
+                    </span>
+                    {reindexProgress.descriptions}
+                  </div>
+                  <div className="flex flex-row items-center justify-center gap-3">
+                    <span className="text-primary-variant">
+                      Tracked objects processed:
+                    </span>
+                    {reindexProgress.processed_objects}
+                  </div>
+                </div>
+              </>
             )}
-            <div className="max-w-96 text-center">
-              You may want to reindex the embeddings of your tracked objects
-              once the models are downloaded.
-            </div>
-            <div className="flex max-w-96 items-center text-primary-variant">
-              <Link
-                to="https://docs.frigate.video/configuration/semantic_search"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline"
-              >
-                Read the documentation{" "}
-                <LuExternalLink className="ml-2 inline-flex size-3" />
-              </Link>
-            </div>
+            {!allModelsLoaded && (
+              <>
+                <div className="text-center text-primary-variant">
+                  Frigate is downloading the necessary embeddings models to
+                  support semantic searching. This may take several minutes
+                  depending on the speed of your network connection.
+                </div>
+                <div className="flex w-96 flex-col gap-2 py-5">
+                  <div className="flex flex-row items-center justify-center gap-2">
+                    {renderModelStateIcon(visionModelState)}
+                    Vision model
+                  </div>
+                  <div className="flex flex-row items-center justify-center gap-2">
+                    {renderModelStateIcon(visionFeatureExtractorState)}
+                    Vision model feature extractor
+                  </div>
+                  <div className="flex flex-row items-center justify-center gap-2">
+                    {renderModelStateIcon(textModelState)}
+                    Text model
+                  </div>
+                  <div className="flex flex-row items-center justify-center gap-2">
+                    {renderModelStateIcon(textTokenizerState)}
+                    Text tokenizer
+                  </div>
+                </div>
+                {(textModelState === "error" ||
+                  textTokenizerState === "error" ||
+                  visionModelState === "error" ||
+                  visionFeatureExtractorState === "error") && (
+                  <div className="my-3 max-w-96 text-center text-danger">
+                    An error has occurred. Check Frigate logs.
+                  </div>
+                )}
+                <div className="text-center text-primary-variant">
+                  You may want to reindex the embeddings of your tracked objects
+                  once the models are downloaded.
+                </div>
+                <div className="flex items-center text-primary-variant">
+                  <Link
+                    to="https://docs.frigate.video/configuration/semantic_search"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline"
+                  >
+                    Read the documentation{" "}
+                    <LuExternalLink className="ml-2 inline-flex size-3" />
+                  </Link>
+                </div>
+              </>
+            )}
           </div>
         </div>
       ) : (

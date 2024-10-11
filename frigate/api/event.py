@@ -472,7 +472,7 @@ def events_search(request: Request, params: EventsSearchQueryParams = Depends())
                 status_code=404,
             )
 
-        thumb_result = context.embeddings.search_thumbnail(search_event)
+        thumb_result = context.search_thumbnail(search_event)
         thumb_ids = dict(
             zip(
                 [result[0] for result in thumb_result],
@@ -487,7 +487,7 @@ def events_search(request: Request, params: EventsSearchQueryParams = Depends())
         search_types = search_type.split(",")
 
         if "thumbnail" in search_types:
-            thumb_result = context.embeddings.search_thumbnail(query)
+            thumb_result = context.search_thumbnail(query)
             thumb_ids = dict(
                 zip(
                     [result[0] for result in thumb_result],
@@ -504,7 +504,7 @@ def events_search(request: Request, params: EventsSearchQueryParams = Depends())
             )
 
         if "description" in search_types:
-            desc_result = context.embeddings.search_description(query)
+            desc_result = context.search_description(query)
             desc_ids = dict(
                 zip(
                     [result[0] for result in desc_result],
@@ -927,27 +927,19 @@ def set_description(
 
     new_description = body.description
 
-    if new_description is None or len(new_description) == 0:
-        return JSONResponse(
-            content=(
-                {
-                    "success": False,
-                    "message": "description cannot be empty",
-                }
-            ),
-            status_code=400,
-        )
-
     event.data["description"] = new_description
     event.save()
 
     # If semantic search is enabled, update the index
     if request.app.frigate_config.semantic_search.enabled:
         context: EmbeddingsContext = request.app.embeddings
-        context.embeddings.upsert_description(
-            event_id=event_id,
-            description=new_description,
-        )
+        if len(new_description) > 0:
+            context.update_description(
+                event_id,
+                new_description,
+            )
+        else:
+            context.db.delete_embeddings_description(event_ids=[event_id])
 
     response_message = (
         f"Event {event_id} description is now blank"
@@ -1033,8 +1025,8 @@ def delete_event(request: Request, event_id: str):
     # If semantic search is enabled, update the index
     if request.app.frigate_config.semantic_search.enabled:
         context: EmbeddingsContext = request.app.embeddings
-        context.embeddings.delete_thumbnail(id=[event_id])
-        context.embeddings.delete_description(id=[event_id])
+        context.db.delete_embeddings_thumbnail(event_ids=[event_id])
+        context.db.delete_embeddings_description(event_ids=[event_id])
     return JSONResponse(
         content=({"success": True, "message": "Event " + event_id + " deleted"}),
         status_code=200,
