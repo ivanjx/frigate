@@ -67,6 +67,8 @@ export type EmbeddingsReindexProgressType = {
   descriptions: number;
   processed_objects: number;
   total_objects: number;
+  time_remaining: number;
+  status: string;
 };
 
 export type ToggleableSetting = "ON" | "OFF";

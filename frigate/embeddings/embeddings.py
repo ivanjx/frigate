@@ -3,14 +3,20 @@
 import base64
 import io
 import logging
+import os
 import time
 
+from numpy import ndarray
 from PIL import Image
 from playhouse.shortcuts import model_to_dict
 
 from frigate.comms.inter_process import InterProcessRequestor
 from frigate.config.semantic_search import SemanticSearchConfig
-from frigate.const import UPDATE_EMBEDDINGS_REINDEX_PROGRESS, UPDATE_MODEL_STATE
+from frigate.const import (
+    CONFIG_DIR,
+    UPDATE_EMBEDDINGS_REINDEX_PROGRESS,
+    UPDATE_MODEL_STATE,
+)
 from frigate.db.sqlitevecq import SqliteVecQueueDatabase
 from frigate.models import Event
 from frigate.types import ModelStatusTypesEnum
@@ -83,12 +89,6 @@ class Embeddings:
                 },
             )
 
-        def jina_text_embedding_function(outputs):
-            return outputs[0]
-
-        def jina_vision_embedding_function(outputs):
-            return outputs[0]
-
         self.text_embedding = GenericONNXEmbedding(
             model_name="jinaai/jina-clip-v1",
             model_file="text_model_fp16.onnx",
@@ -96,7 +96,6 @@ class Embeddings:
             download_urls={
                 "text_model_fp16.onnx": "https://huggingface.co/jinaai/jina-clip-v1/resolve/main/onnx/text_model_fp16.onnx",
             },
-            embedding_function=jina_text_embedding_function,
             model_size=config.model_size,
             model_type="text",
             requestor=self.requestor,
@@ -118,14 +117,13 @@ class Embeddings:
             model_name="jinaai/jina-clip-v1",
             model_file=model_file,
             download_urls=download_urls,
-            embedding_function=jina_vision_embedding_function,
             model_size=config.model_size,
             model_type="vision",
             requestor=self.requestor,
-            device=self.config.device,
+            device="GPU" if config.model_size == "large" else "CPU",
         )
 
-    def upsert_thumbnail(self, event_id: str, thumbnail: bytes):
+    def upsert_thumbnail(self, event_id: str, thumbnail: bytes) -> ndarray:
         # Convert thumbnail bytes to PIL Image
         image = Image.open(io.BytesIO(thumbnail)).convert("RGB")
         embedding = self.vision_embedding([image])[0]
@@ -140,7 +138,30 @@ class Embeddings:
 
         return embedding
 
-    def upsert_description(self, event_id: str, description: str):
+    def batch_upsert_thumbnail(self, event_thumbs: dict[str, bytes]) -> list[ndarray]:
+        images = [
+            Image.open(io.BytesIO(thumb)).convert("RGB")
+            for thumb in event_thumbs.values()
+        ]
+        ids = list(event_thumbs.keys())
+        embeddings = self.vision_embedding(images)
+
+        items = []
+
+        for i in range(len(ids)):
+            items.append(ids[i])
+            items.append(serialize(embeddings[i]))
+
+        self.db.execute_sql(
+            """
+            INSERT OR REPLACE INTO vec_thumbnails(id, thumbnail_embedding)
+            VALUES {}
+            """.format(", ".join(["(?, ?)"] * len(ids))),
+            items,
+        )
+        return embeddings
+
+    def upsert_description(self, event_id: str, description: str) -> ndarray:
         embedding = self.text_embedding([description])[0]
         self.db.execute_sql(
             """
@@ -152,6 +173,31 @@ class Embeddings:
 
         return embedding
 
+    def batch_upsert_description(self, event_descriptions: dict[str, str]) -> ndarray:
+        # upsert embeddings one by one to avoid token limit
+        embeddings = []
+
+        for desc in event_descriptions.values():
+            embeddings.append(self.text_embedding([desc])[0])
+
+        ids = list(event_descriptions.keys())
+
+        items = []
+
+        for i in range(len(ids)):
+            items.append(ids[i])
+            items.append(serialize(embeddings[i]))
+
+        self.db.execute_sql(
+            """
+            INSERT OR REPLACE INTO vec_descriptions(id, description_embedding)
+            VALUES {}
+            """.format(", ".join(["(?, ?)"] * len(ids))),
+            items,
+        )
+
+        return embeddings
+
     def reindex(self) -> None:
         logger.info("Indexing tracked object embeddings...")
 
@@ -160,15 +206,11 @@ class Embeddings:
         self.db.create_embeddings_tables()
         logger.debug("Created embeddings tables.")
 
-        st = time.time()
-        totals = {
-            "thumbnails": 0,
-            "descriptions": 0,
-            "processed_objects": 0,
-            "total_objects": 0,
-        }
+        # Delete the saved stats file
+        if os.path.exists(os.path.join(CONFIG_DIR, ".search_stats.json")):
+            os.remove(os.path.join(CONFIG_DIR, ".search_stats.json"))
 
-        self.requestor.send_data(UPDATE_EMBEDDINGS_REINDEX_PROGRESS, totals)
+        st = time.time()
 
         # Get total count of events to process
         total_events = (
@@ -179,11 +221,20 @@ class Embeddings:
             )
             .count()
         )
-        totals["total_objects"] = total_events
 
-        batch_size = 100
+        batch_size = 32
         current_page = 1
-        processed_events = 0
+
+        totals = {
+            "thumbnails": 0,
+            "descriptions": 0,
+            "processed_objects": total_events - 1 if total_events < batch_size else 0,
+            "total_objects": total_events,
+            "time_remaining": 0 if total_events < batch_size else -1,
+            "status": "indexing",
+        }
+
+        self.requestor.send_data(UPDATE_EMBEDDINGS_REINDEX_PROGRESS, totals)
 
         events = (
             Event.select()
@@ -197,30 +248,43 @@ class Embeddings:
 
         while len(events) > 0:
             event: Event
+            batch_thumbs = {}
+            batch_descs = {}
             for event in events:
-                thumbnail = base64.b64decode(event.thumbnail)
-                self.upsert_thumbnail(event.id, thumbnail)
+                batch_thumbs[event.id] = base64.b64decode(event.thumbnail)
                 totals["thumbnails"] += 1
 
                 if description := event.data.get("description", "").strip():
+                    batch_descs[event.id] = description
                     totals["descriptions"] += 1
-                    self.upsert_description(event.id, description)
 
                 totals["processed_objects"] += 1
 
-                # report progress every 10 events so we don't spam the logs
-                if (totals["processed_objects"] % 10) == 0:
-                    progress = (processed_events / total_events) * 100
-                    logger.debug(
-                        "Processed %d/%d events (%.2f%% complete) | Thumbnails: %d, Descriptions: %d",
-                        processed_events,
-                        total_events,
-                        progress,
-                        totals["thumbnails"],
-                        totals["descriptions"],
-                    )
+            # run batch embedding
+            self.batch_upsert_thumbnail(batch_thumbs)
 
-                self.requestor.send_data(UPDATE_EMBEDDINGS_REINDEX_PROGRESS, totals)
+            if batch_descs:
+                self.batch_upsert_description(batch_descs)
+
+            # report progress every batch so we don't spam the logs
+            progress = (totals["processed_objects"] / total_events) * 100
+            logger.debug(
+                "Processed %d/%d events (%.2f%% complete) | Thumbnails: %d, Descriptions: %d",
+                totals["processed_objects"],
+                total_events,
+                progress,
+                totals["thumbnails"],
+                totals["descriptions"],
+            )
+
+            # Calculate time remaining
+            elapsed_time = time.time() - st
+            avg_time_per_event = elapsed_time / totals["processed_objects"]
+            remaining_events = total_events - totals["processed_objects"]
+            time_remaining = avg_time_per_event * remaining_events
+            totals["time_remaining"] = int(time_remaining)
+
+            self.requestor.send_data(UPDATE_EMBEDDINGS_REINDEX_PROGRESS, totals)
 
             # Move to the next page
             current_page += 1
@@ -238,6 +302,8 @@ class Embeddings:
             "Embedded %d thumbnails and %d descriptions in %s seconds",
             totals["thumbnails"],
             totals["descriptions"],
-            time.time() - st,
+            round(time.time() - st, 1),
         )
+        totals["status"] = "completed"
+
         self.requestor.send_data(UPDATE_EMBEDDINGS_REINDEX_PROGRESS, totals)

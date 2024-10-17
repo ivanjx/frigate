@@ -7,9 +7,11 @@ import ActivityIndicator from "@/components/indicators/activity-indicator";
 import AnimatedCircularProgressBar from "@/components/ui/circular-progress-bar";
 import { useApiFilterArgs } from "@/hooks/use-api-filter";
 import { useTimezone } from "@/hooks/use-date-utils";
+import { usePersistence } from "@/hooks/use-persistence";
 import { FrigateConfig } from "@/types/frigateConfig";
 import { SearchFilter, SearchQuery, SearchResult } from "@/types/search";
 import { ModelState } from "@/types/ws";
+import { formatSecondsToDuration } from "@/utils/dateUtil";
 import SearchView from "@/views/search/SearchView";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { LuCheck, LuExternalLink, LuX } from "react-icons/lu";
@@ -26,6 +28,18 @@ export default function Explore() {
   const { data: config } = useSWR<FrigateConfig>("config", {
     revalidateOnFocus: false,
   });
+
+  // grid
+
+  const [columnCount, setColumnCount] = usePersistence("exploreGridColumns", 4);
+  const gridColumns = useMemo(() => columnCount ?? 4, [columnCount]);
+
+  // default layout
+
+  const [defaultView, setDefaultView] = usePersistence(
+    "exploreDefaultView",
+    "summary",
+  );
 
   const timezone = useTimezone(config);
 
@@ -64,7 +78,11 @@ export default function Explore() {
   const searchQuery: SearchQuery = useMemo(() => {
     // no search parameters
     if (searchSearchParams && Object.keys(searchSearchParams).length === 0) {
-      return null;
+      if (defaultView == "grid") {
+        return ["events", {}];
+      } else {
+        return null;
+      }
     }
 
     // parameters, but no search term and not similarity
@@ -116,7 +134,7 @@ export default function Explore() {
         include_thumbnails: 0,
       },
     ];
-  }, [searchTerm, searchSearchParams, similaritySearch, timezone]);
+  }, [searchTerm, searchSearchParams, similaritySearch, timezone, defaultView]);
 
   // paging
 
@@ -182,22 +200,29 @@ export default function Explore() {
   const eventUpdate = useEventUpdate();
 
   useEffect(() => {
-    mutate();
+    if (eventUpdate) {
+      mutate();
+    }
     // mutate / revalidate when event description updates come in
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventUpdate]);
 
   // embeddings reindex progress
 
-  const { payload: reindexProgress } = useEmbeddingsReindexProgress();
+  const { payload: reindexState } = useEmbeddingsReindexProgress();
 
-  const embeddingsReindexing = useMemo(
-    () =>
-      reindexProgress
-        ? reindexProgress.total_objects - reindexProgress.processed_objects > 0
-        : undefined,
-    [reindexProgress],
-  );
+  const embeddingsReindexing = useMemo(() => {
+    if (reindexState) {
+      switch (reindexState.status) {
+        case "indexing":
+          return true;
+        case "completed":
+          return false;
+        default:
+          return undefined;
+      }
+    }
+  }, [reindexState]);
 
   // model states
 
@@ -246,7 +271,8 @@ export default function Explore() {
 
   if (
     config?.semantic_search.enabled &&
-    (!textModelState ||
+    (!reindexState ||
+      !textModelState ||
       !textTokenizerState ||
       !visionModelState ||
       !visionFeatureExtractorState)
@@ -266,7 +292,7 @@ export default function Explore() {
               <TbExclamationCircle className="mb-3 size-10" />
               <div>Search Unavailable</div>
             </div>
-            {embeddingsReindexing && (
+            {embeddingsReindexing && allModelsLoaded && (
               <>
                 <div className="text-center text-primary-variant">
                   Search can be used after tracked object embeddings have
@@ -275,30 +301,43 @@ export default function Explore() {
                 <div className="pt-5 text-center">
                   <AnimatedCircularProgressBar
                     min={0}
-                    max={reindexProgress.total_objects}
-                    value={reindexProgress.processed_objects}
+                    max={reindexState.total_objects}
+                    value={reindexState.processed_objects}
                     gaugePrimaryColor="hsl(var(--selected))"
                     gaugeSecondaryColor="hsl(var(--secondary))"
                   />
                 </div>
                 <div className="flex w-96 flex-col gap-2 py-5">
+                  {reindexState.time_remaining !== null && (
+                    <div className="mb-3 flex flex-col items-center justify-center gap-1">
+                      <div className="text-primary-variant">
+                        {reindexState.time_remaining === -1
+                          ? "Starting up..."
+                          : "Estimated time remaining:"}
+                      </div>
+                      {reindexState.time_remaining >= 0 &&
+                        (formatSecondsToDuration(reindexState.time_remaining) ||
+                          "Finishing shortly")}
+                    </div>
+                  )}
                   <div className="flex flex-row items-center justify-center gap-3">
                     <span className="text-primary-variant">
                       Thumbnails embedded:
                     </span>
-                    {reindexProgress.thumbnails}
+                    {reindexState.thumbnails}
                   </div>
                   <div className="flex flex-row items-center justify-center gap-3">
                     <span className="text-primary-variant">
                       Descriptions embedded:
                     </span>
-                    {reindexProgress.descriptions}
+                    {reindexState.descriptions}
                   </div>
                   <div className="flex flex-row items-center justify-center gap-3">
                     <span className="text-primary-variant">
                       Tracked objects processed:
                     </span>
-                    {reindexProgress.processed_objects}
+                    {reindexState.processed_objects} /{" "}
+                    {reindexState.total_objects}
                   </div>
                 </div>
               </>
@@ -362,6 +401,9 @@ export default function Explore() {
           searchFilter={searchFilter}
           searchResults={searchResults}
           isLoading={(isLoadingInitialData || isLoadingMore) ?? true}
+          hasMore={!isReachingEnd}
+          columns={gridColumns}
+          defaultView={defaultView}
           setSearch={setSearch}
           setSimilaritySearch={(search) => {
             setSearchFilter({
@@ -372,8 +414,10 @@ export default function Explore() {
           }}
           setSearchFilter={setSearchFilter}
           onUpdateFilter={setSearchFilter}
+          setColumns={setColumnCount}
+          setDefaultView={setDefaultView}
           loadMore={loadMore}
-          hasMore={!isReachingEnd}
+          refresh={mutate}
         />
       )}
     </>
