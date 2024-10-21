@@ -23,6 +23,10 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { DualThumbSlider } from "@/components/ui/slider";
+import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
 type SearchFilterDialogProps = {
   config?: FrigateConfig;
@@ -46,6 +50,12 @@ export default function SearchFilterDialog({
   const [currentFilter, setCurrentFilter] = useState(filter ?? {});
   const { data: allSubLabels } = useSWR(["sub_labels", { split_joined: 1 }]);
 
+  useEffect(() => {
+    if (filter) {
+      setCurrentFilter(filter);
+    }
+  }, [filter]);
+
   // state
 
   const [open, setOpen] = useState(false);
@@ -54,9 +64,12 @@ export default function SearchFilterDialog({
     () =>
       currentFilter &&
       (currentFilter.time_range ||
+        (currentFilter.min_score ?? 0) > 0.5 ||
+        (currentFilter.has_snapshot ?? 0) === 1 ||
+        (currentFilter.has_clip ?? 0) === 1 ||
+        (currentFilter.max_score ?? 1) < 1 ||
         (currentFilter.zones?.length ?? 0) > 0 ||
-        (currentFilter.sub_labels?.length ?? 0) > 0 ||
-        (currentFilter.search_type?.length ?? 2) !== 2),
+        (currentFilter.sub_labels?.length ?? 0) > 0),
     [currentFilter],
   );
 
@@ -97,20 +110,33 @@ export default function SearchFilterDialog({
           setCurrentFilter({ ...currentFilter, sub_labels: newSubLabels })
         }
       />
-      {config?.semantic_search?.enabled &&
-        !currentFilter?.search_type?.includes("similarity") && (
-          <SearchTypeContent
-            searchSources={
-              currentFilter?.search_type ?? ["thumbnail", "description"]
-            }
-            setSearchSources={(newSearchSource) =>
-              setCurrentFilter({
-                ...currentFilter,
-                search_type: newSearchSource,
-              })
-            }
-          />
-        )}
+      <ScoreFilterContent
+        minScore={currentFilter.min_score}
+        maxScore={currentFilter.max_score}
+        setScoreRange={(min, max) =>
+          setCurrentFilter({ ...currentFilter, min_score: min, max_score: max })
+        }
+      />
+      <SnapshotClipFilterContent
+        hasSnapshot={
+          currentFilter.has_snapshot !== undefined
+            ? currentFilter.has_snapshot === 1
+            : undefined
+        }
+        hasClip={
+          currentFilter.has_clip !== undefined
+            ? currentFilter.has_clip === 1
+            : undefined
+        }
+        setSnapshotClip={(snapshot, clip) =>
+          setCurrentFilter({
+            ...currentFilter,
+            has_snapshot:
+              snapshot !== undefined ? (snapshot ? 1 : 0) : undefined,
+            has_clip: clip !== undefined ? (clip ? 1 : 0) : undefined,
+          })
+        }
+      />
       {isDesktop && <DropdownMenuSeparator />}
       <div className="flex items-center justify-evenly p-2">
         <Button
@@ -133,6 +159,10 @@ export default function SearchFilterDialog({
               zones: undefined,
               sub_labels: undefined,
               search_type: ["thumbnail", "description"],
+              min_score: undefined,
+              max_score: undefined,
+              has_snapshot: undefined,
+              has_clip: undefined,
             }));
           }}
         >
@@ -420,58 +450,191 @@ export function SubFilterContent({
   );
 }
 
-type SearchTypeContentProps = {
-  searchSources: SearchSource[] | undefined;
-  setSearchSources: (sources: SearchSource[] | undefined) => void;
+type ScoreFilterContentProps = {
+  minScore: number | undefined;
+  maxScore: number | undefined;
+  setScoreRange: (min: number | undefined, max: number | undefined) => void;
 };
-export function SearchTypeContent({
-  searchSources,
-  setSearchSources,
-}: SearchTypeContentProps) {
+export function ScoreFilterContent({
+  minScore,
+  maxScore,
+  setScoreRange,
+}: ScoreFilterContentProps) {
   return (
-    <>
-      <div className="overflow-x-hidden">
-        <DropdownMenuSeparator className="mb-3" />
-        <div className="text-lg">Search Sources</div>
-        <div className="mt-2.5 flex flex-col gap-2.5">
-          <FilterSwitch
-            label="Thumbnail Image"
-            isChecked={searchSources?.includes("thumbnail") ?? false}
-            onCheckedChange={(isChecked) => {
-              const updatedSources = searchSources ? [...searchSources] : [];
+    <div className="overflow-x-hidden">
+      <DropdownMenuSeparator className="mb-3" />
+      <div className="mb-3 text-lg">Score</div>
+      <div className="flex items-center gap-1">
+        <Input
+          className="w-14 text-center"
+          inputMode="numeric"
+          value={Math.round((minScore ?? 0.5) * 100)}
+          onChange={(e) => {
+            const value = e.target.value;
 
-              if (isChecked) {
-                updatedSources.push("thumbnail");
-                setSearchSources(updatedSources);
-              } else {
-                if (updatedSources.length > 1) {
-                  const index = updatedSources.indexOf("thumbnail");
-                  if (index !== -1) updatedSources.splice(index, 1);
-                  setSearchSources(updatedSources);
-                }
-              }
-            }}
-          />
-          <FilterSwitch
-            label="Description"
-            isChecked={searchSources?.includes("description") ?? false}
-            onCheckedChange={(isChecked) => {
-              const updatedSources = searchSources ? [...searchSources] : [];
+            if (value) {
+              setScoreRange(parseInt(value) / 100.0, maxScore ?? 1.0);
+            }
+          }}
+        />
+        <DualThumbSlider
+          className="mx-2 w-full"
+          min={0.5}
+          max={1.0}
+          step={0.01}
+          value={[minScore ?? 0.5, maxScore ?? 1.0]}
+          onValueChange={([min, max]) => setScoreRange(min, max)}
+        />
+        <Input
+          className="w-14 text-center"
+          inputMode="numeric"
+          value={Math.round((maxScore ?? 1.0) * 100)}
+          onChange={(e) => {
+            const value = e.target.value;
 
-              if (isChecked) {
-                updatedSources.push("description");
-                setSearchSources(updatedSources);
-              } else {
-                if (updatedSources.length > 1) {
-                  const index = updatedSources.indexOf("description");
-                  if (index !== -1) updatedSources.splice(index, 1);
-                  setSearchSources(updatedSources);
+            if (value) {
+              setScoreRange(minScore ?? 0.5, parseInt(value) / 100.0);
+            }
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+type SnapshotClipContentProps = {
+  hasSnapshot: boolean | undefined;
+  hasClip: boolean | undefined;
+  setSnapshotClip: (
+    snapshot: boolean | undefined,
+    clip: boolean | undefined,
+  ) => void;
+};
+
+function SnapshotClipFilterContent({
+  hasSnapshot,
+  hasClip,
+  setSnapshotClip,
+}: SnapshotClipContentProps) {
+  const [isSnapshotFilterActive, setIsSnapshotFilterActive] = useState(
+    hasSnapshot !== undefined,
+  );
+  const [isClipFilterActive, setIsClipFilterActive] = useState(
+    hasClip !== undefined,
+  );
+
+  useEffect(() => {
+    setIsSnapshotFilterActive(hasSnapshot !== undefined);
+  }, [hasSnapshot]);
+
+  useEffect(() => {
+    setIsClipFilterActive(hasClip !== undefined);
+  }, [hasClip]);
+
+  return (
+    <div className="overflow-x-hidden">
+      <DropdownMenuSeparator className="mb-3" />
+      <div className="mb-3 text-lg">Features</div>
+
+      <div className="my-2.5 space-y-1">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <Checkbox
+              id="snapshot-filter"
+              className="size-5 text-white accent-white data-[state=checked]:bg-selected data-[state=checked]:text-white"
+              checked={isSnapshotFilterActive}
+              onCheckedChange={(checked) => {
+                setIsSnapshotFilterActive(checked as boolean);
+                if (checked) {
+                  setSnapshotClip(true, hasClip);
+                } else {
+                  setSnapshotClip(undefined, hasClip);
                 }
-              }
+              }}
+            />
+            <Label
+              htmlFor="snapshot-filter"
+              className="cursor-pointer text-sm font-medium leading-none"
+            >
+              Has a snapshot
+            </Label>
+          </div>
+          <ToggleGroup
+            type="single"
+            value={
+              hasSnapshot === undefined ? undefined : hasSnapshot ? "yes" : "no"
+            }
+            onValueChange={(value) => {
+              if (value === "yes") setSnapshotClip(true, hasClip);
+              else if (value === "no") setSnapshotClip(false, hasClip);
             }}
-          />
+            disabled={!isSnapshotFilterActive}
+          >
+            <ToggleGroupItem
+              value="yes"
+              aria-label="Yes"
+              className="data-[state=on]:bg-selected data-[state=on]:text-white data-[state=on]:hover:bg-selected data-[state=on]:hover:text-white"
+            >
+              Yes
+            </ToggleGroupItem>
+            <ToggleGroupItem
+              value="no"
+              aria-label="No"
+              className="data-[state=on]:bg-selected data-[state=on]:text-white data-[state=on]:hover:bg-selected data-[state=on]:hover:text-white"
+            >
+              No
+            </ToggleGroupItem>
+          </ToggleGroup>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <Checkbox
+              className="size-5 text-white accent-white data-[state=checked]:bg-selected data-[state=checked]:text-white"
+              id="clip-filter"
+              checked={isClipFilterActive}
+              onCheckedChange={(checked) => {
+                setIsClipFilterActive(checked as boolean);
+                if (checked) {
+                  setSnapshotClip(hasSnapshot, true);
+                } else {
+                  setSnapshotClip(hasSnapshot, undefined);
+                }
+              }}
+            />
+            <Label
+              htmlFor="clip-filter"
+              className="cursor-pointer text-sm font-medium leading-none"
+            >
+              Has a video clip
+            </Label>
+          </div>
+          <ToggleGroup
+            type="single"
+            value={hasClip === undefined ? undefined : hasClip ? "yes" : "no"}
+            onValueChange={(value) => {
+              if (value === "yes") setSnapshotClip(hasSnapshot, true);
+              else if (value === "no") setSnapshotClip(hasSnapshot, false);
+            }}
+            disabled={!isClipFilterActive}
+          >
+            <ToggleGroupItem
+              value="yes"
+              aria-label="Yes"
+              className="data-[state=on]:bg-selected data-[state=on]:text-white data-[state=on]:hover:bg-selected data-[state=on]:hover:text-white"
+            >
+              Yes
+            </ToggleGroupItem>
+            <ToggleGroupItem
+              value="no"
+              aria-label="No"
+              className="data-[state=on]:bg-selected data-[state=on]:text-white data-[state=on]:hover:bg-selected data-[state=on]:hover:text-white"
+            >
+              No
+            </ToggleGroupItem>
+          </ToggleGroup>
         </div>
       </div>
-    </>
+    </div>
   );
 }

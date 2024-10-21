@@ -20,7 +20,7 @@ def get_ort_providers(
             ["CPUExecutionProvider"],
             [
                 {
-                    "arena_extend_strategy": "kSameAsRequested",
+                    "enable_cpu_mem_arena": False,
                 }
             ],
         )
@@ -53,7 +53,7 @@ def get_ort_providers(
             providers.append(provider)
             options.append(
                 {
-                    "arena_extend_strategy": "kSameAsRequested",
+                    "enable_cpu_mem_arena": False,
                 }
             )
         else:
@@ -86,7 +86,9 @@ class ONNXModelRunner:
             # Use ONNXRuntime
             self.type = "ort"
             self.ort = ort.InferenceSession(
-                model_path, providers=providers, provider_options=options
+                model_path,
+                providers=providers,
+                provider_options=options,
             )
 
     def get_input_names(self) -> list[str]:
