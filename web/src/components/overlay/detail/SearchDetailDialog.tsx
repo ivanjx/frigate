@@ -27,6 +27,7 @@ import ActivityIndicator from "@/components/indicators/activity-indicator";
 import {
   FaCheckCircle,
   FaChevronDown,
+  FaDownload,
   FaHistory,
   FaImage,
   FaRegListAlt,
@@ -68,6 +69,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { LuInfo } from "react-icons/lu";
+import { TooltipPortal } from "@radix-ui/react-tooltip";
 
 const SEARCH_TABS = [
   "details",
@@ -296,7 +298,7 @@ function ObjectDetailsTab({
     }
 
     if (search.sub_label) {
-      return Math.round((search.data?.top_score ?? 0) * 100);
+      return Math.round((search.data?.sub_label_score ?? 0) * 100);
     } else {
       return undefined;
     }
@@ -321,6 +323,22 @@ function ObjectDetailsTab({
             (key.includes("events") ||
               key.includes("events/search") ||
               key.includes("events/explore")),
+          (currentData: SearchResult[][] | SearchResult[] | undefined) => {
+            if (!currentData) return currentData;
+            // optimistic update
+            return currentData
+              .flat()
+              .map((event) =>
+                event.id === search.id
+                  ? { ...event, data: { ...event.data, description: desc } }
+                  : event,
+              );
+          },
+          {
+            optimisticData: true,
+            rollbackOnError: true,
+            revalidate: false,
+          },
         );
       })
       .catch(() => {
@@ -424,6 +442,7 @@ function ObjectDetailsTab({
           />
           {config?.semantic_search.enabled && (
             <Button
+              aria-label="Find similar tracked objects"
               onClick={() => {
                 setSearch(undefined);
 
@@ -450,6 +469,7 @@ function ObjectDetailsTab({
             <div className="flex items-center">
               <Button
                 className="rounded-r-none border-r-0"
+                aria-label="Regenerate tracked object description"
                 onClick={() => regenerateDescription("thumbnails")}
               >
                 Regenerate
@@ -457,19 +477,24 @@ function ObjectDetailsTab({
               {search.has_snapshot && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button className="rounded-l-none border-l-0 px-2">
+                    <Button
+                      className="rounded-l-none border-l-0 px-2"
+                      aria-label="Expand regeneration menu"
+                    >
                       <FaChevronDown className="size-3" />
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent>
                     <DropdownMenuItem
                       className="cursor-pointer"
+                      aria-label="Regenerate from snapshot"
                       onClick={() => regenerateDescription("snapshot")}
                     >
                       Regenerate from Snapshot
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       className="cursor-pointer"
+                      aria-label="Regenerate from thumbnails"
                       onClick={() => regenerateDescription("thumbnails")}
                     >
                       Regenerate from Thumbnails
@@ -479,7 +504,11 @@ function ObjectDetailsTab({
               )}
             </div>
           )}
-          <Button variant="select" onClick={updateDescription}>
+          <Button
+            variant="select"
+            aria-label="Save"
+            onClick={updateDescription}
+          >
             Save
           </Button>
         </div>
@@ -550,16 +579,39 @@ function ObjectSnapshotTab({
               }}
             >
               {search?.id && (
-                <img
-                  ref={imgRef}
-                  className={`mx-auto max-h-[60dvh] bg-black object-contain`}
-                  src={`${baseUrl}api/events/${search?.id}/snapshot.jpg`}
-                  alt={`${search?.label}`}
-                  loading={isSafari ? "eager" : "lazy"}
-                  onLoad={() => {
-                    onImgLoad();
-                  }}
-                />
+                <div className="relative mx-auto">
+                  <img
+                    ref={imgRef}
+                    className={`mx-auto max-h-[60dvh] bg-black object-contain`}
+                    src={`${baseUrl}api/events/${search?.id}/snapshot.jpg`}
+                    alt={`${search?.label}`}
+                    loading={isSafari ? "eager" : "lazy"}
+                    onLoad={() => {
+                      onImgLoad();
+                    }}
+                  />
+                  <div
+                    className={cn(
+                      "absolute right-1 top-1 flex items-center gap-2",
+                    )}
+                  >
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <a
+                          download
+                          href={`${baseUrl}api/events/${search?.id}/snapshot.jpg`}
+                        >
+                          <Chip className="cursor-pointer rounded-md bg-gray-500 bg-gradient-to-br from-gray-400 to-gray-500">
+                            <FaDownload className="size-4 text-white" />
+                          </Chip>
+                        </a>
+                      </TooltipTrigger>
+                      <TooltipPortal>
+                        <TooltipContent>Download</TooltipContent>
+                      </TooltipPortal>
+                    </Tooltip>
+                  </div>
+                </div>
               )}
             </TransformComponent>
             {search.plus_id !== "not_enabled" && search.end_time && (
@@ -585,6 +637,7 @@ function ObjectSnapshotTab({
                       <>
                         <Button
                           className="bg-success"
+                          aria-label="Confirm this label for Frigate Plus"
                           onClick={() => {
                             setState("uploading");
                             onSubmitToPlus(false);
@@ -594,6 +647,7 @@ function ObjectSnapshotTab({
                         </Button>
                         <Button
                           className="text-white"
+                          aria-label="Do not confirm this label for Frigate Plus"
                           variant="destructive"
                           onClick={() => {
                             setState("uploading");
@@ -640,7 +694,7 @@ export function VideoTab({ search }: VideoTabProps) {
       {reviewItem && (
         <div
           className={cn(
-            "absolute top-2 z-10 flex items-center",
+            "absolute top-2 z-10 flex items-center gap-2",
             isIOS ? "right-8" : "right-2",
           )}
         >
@@ -660,7 +714,24 @@ export function VideoTab({ search }: VideoTabProps) {
                 <FaHistory className="size-4 text-white" />
               </Chip>
             </TooltipTrigger>
-            <TooltipContent side="left">View in History</TooltipContent>
+            <TooltipPortal>
+              <TooltipContent>View in History</TooltipContent>
+            </TooltipPortal>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <a
+                download
+                href={`${baseUrl}api/${search.camera}/start/${search.start_time}/end/${endTime}/clip.mp4`}
+              >
+                <Chip className="cursor-pointer rounded-md bg-gray-500 bg-gradient-to-br from-gray-400 to-gray-500">
+                  <FaDownload className="size-4 text-white" />
+                </Chip>
+              </a>
+            </TooltipTrigger>
+            <TooltipPortal>
+              <TooltipContent>Download</TooltipContent>
+            </TooltipPortal>
           </Tooltip>
         </div>
       )}
