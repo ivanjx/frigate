@@ -44,7 +44,7 @@ export default function Explore() {
 
   const [defaultView, setDefaultView, defaultViewLoaded] = usePersistence(
     "exploreDefaultView",
-    "summary",
+    "grid",
   );
 
   const timezone = useTimezone(config);
