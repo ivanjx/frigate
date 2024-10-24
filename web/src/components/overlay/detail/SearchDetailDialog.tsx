@@ -287,7 +287,7 @@ function ObjectDetailsTab({
       return 0;
     }
 
-    const value = search.data.top_score;
+    const value = search.data.top_score ?? search.top_score ?? 0;
 
     return Math.round(value * 100);
   }, [search]);
@@ -368,9 +368,9 @@ function ObjectDetailsTab({
             );
           }
         })
-        .catch(() => {
+        .catch((error) => {
           toast.error(
-            `Failed to call ${capitalizeAll(config?.genai.provider.replaceAll("_", " ") ?? "Generative AI")} for a new description`,
+            `Failed to call ${capitalizeAll(config?.genai.provider.replaceAll("_", " ") ?? "Generative AI")} for a new description: ${error.response.data.message}`,
             {
               position: "top-center",
             },
