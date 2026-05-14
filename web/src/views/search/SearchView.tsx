@@ -62,7 +62,7 @@ export default function SearchView({
   isValidating,
   hasMore,
   columns,
-  defaultView = "summary",
+  defaultView = "grid",
   setSearch,
   setSimilaritySearch,
   setSearchFilter,
