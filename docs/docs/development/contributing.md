@@ -87,6 +87,13 @@ VS Code will start the Docker Compose file for you and open a terminal window co
 
 After closing VS Code, you may still have containers running. To close everything down, just run `docker-compose down -v` to cleanup all containers.
 
+### Fork image builds
+
+This fork's `cicd` workflow builds and publishes `ghcr.io/ivanjx/frigate:mine`
+for `linux/amd64` on pushes to `mine` or manual dispatch.
+Checkout must run before the disk-space action reallocates free space to
+`/var/lib/docker`; the repository workspace remains on the root filesystem.
+
 ### Testing
 
 #### Unit Tests
